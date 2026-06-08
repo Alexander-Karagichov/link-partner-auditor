@@ -1,0 +1,11 @@
+{
+  "name": "Website Audit Automation",
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": {
+      "label": "Streamlit",
+      "onAutoForward": "openBrowser",
+      "visibility": "public"
+    }
+  }
+}

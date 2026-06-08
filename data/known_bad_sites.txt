@@ -1,0 +1,83 @@
+# Known Bad / Shady Sites
+# Websites that should NOT appear as outbound links on audited pages.
+# Presence of these links (especially from a homepage) is a strong red flag.
+# Format: one domain per line (no protocol prefix needed; matching is done against the domain)
+
+# ── PROVIDED BY USER ──────────────────────────────────────────────────────────
+royalcasino.dk
+nodepositbonus.cc
+spelbloggare.se
+slots-777.com
+nettikasinot.org
+bonusparatodos.com
+
+# ── SHADY GAMBLING AFFILIATE / SPAM SITES ─────────────────────────────────────
+casinobonus.cc
+casinobonus.net
+casinoreviews.net
+bestcasino.org
+nodepositbonus.net
+no-deposit-bonus.com
+free-spins-casino.com
+casinoslots.net
+slotscalendar.com
+casinolistings.com
+casinofreak.com
+casinomentor.com
+casinodaddy.com
+kasinohai.com
+casino-bonus-list.com
+onlinecasinoreports.com
+gambling-sites.net
+gamblingaffiliate.com
+topbettingsites.net
+topcasino.se
+casinoguide.se
+spelbolag.se
+casinopanelen.se
+kasinot.fi
+kasinopelit.fi
+kasinoarvostelu.fi
+kasinohai.fi
+veikkauskoodi.fi
+casinomagneten.se
+casinoskolan.se
+casinoguide.dk
+onlinecasino.dk
+casinobonus.dk
+bedstecasino.dk
+nyecasino.dk
+casinoanmeldelser.dk
+casinopenger.no
+casinoguide.no
+norske-casino.com
+casinobonuser.dk
+bonussi.fi
+
+# ── SHADY ADULT / ESCORT AFFILIATE SITES ──────────────────────────────────────
+adultwork.com
+seekingarrangement.com
+eroticads.com
+adultsearch.com
+escorts.com
+escortbabylon.net
+escort-ads.com
+bedpage.com
+skipthegames.com
+listcrawler.com
+eurogirlsescort.com
+privatedelights.ch
+
+# ── KNOWN SPAM / LINK-INJECTION PATTERNS ──────────────────────────────────────
+777.com
+casino777.com
+casino-x.com
+casinox.com
+spin-casino.com
+spincasino.com
+slotjungle.com
+slotplanet.com
+slotscasino.com
+nettikasinot.com
+vedonlyonti.org
+kasinot.org

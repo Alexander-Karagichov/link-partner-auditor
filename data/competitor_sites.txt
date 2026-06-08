@@ -1,0 +1,8 @@
+# Competitor domains to flag as outbound links
+# One domain per line (no https://, no trailing slash)
+# Lines starting with # are comments
+#
+# EXAMPLES ONLY — replace these with your own competitor domains.
+competitor-one.com
+competitor-two.com
+competitor-three.com

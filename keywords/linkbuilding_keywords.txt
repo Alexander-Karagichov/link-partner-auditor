@@ -1,0 +1,7 @@
+# Link-building targets (EXAMPLES — replace with your own keyword/URL pairs).
+product overview - https://www.example.com/product
+pricing - https://www.example.com/pricing
+integrations - https://www.example.com/integrations
+api documentation - https://www.example.com/docs/api
+free trial - https://www.example.com/signup
+blog topic keyword - https://www.example.com/blog/topic

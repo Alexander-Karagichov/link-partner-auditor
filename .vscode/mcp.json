@@ -1,0 +1,82 @@
+{
+	"servers": {
+		"io.github.brightdata/brightdata-mcp": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"--registry",
+				"https://registry.npmjs.org",
+				"@brightdata/mcp@2.9.5"
+			],
+			"env": {
+				"API_TOKEN": "${input:API_TOKEN}",
+				"WEB_UNLOCKER_ZONE": "${input:WEB_UNLOCKER_ZONE}",
+				"BROWSER_ZONE": "${input:BROWSER_ZONE}",
+				"PRO_MODE": "${input:PRO_MODE}",
+				"GROUPS": "${input:GROUPS}",
+				"TOOLS": "${input:TOOLS}",
+				"POLLING_TIMEOUT": "${input:POLLING_TIMEOUT}",
+				"BASE_TIMEOUT": "${input:BASE_TIMEOUT}",
+				"BASE_MAX_RETRIES": "${input:BASE_MAX_RETRIES}"
+			},
+			"gallery": "https://api.mcp.github.com",
+			"version": "2.9.5"
+		}
+	},
+	"inputs": [
+		{
+			"id": "API_TOKEN",
+			"type": "promptString",
+			"description": "Your API key for Bright Data",
+			"password": true
+		},
+		{
+			"id": "WEB_UNLOCKER_ZONE",
+			"type": "promptString",
+			"description": "Your unlocker zone name",
+			"password": false
+		},
+		{
+			"id": "BROWSER_ZONE",
+			"type": "promptString",
+			"description": "Your browser zone name",
+			"password": false
+		},
+		{
+			"id": "PRO_MODE",
+			"type": "promptString",
+			"description": "To enable PRO_MODE - set to true",
+			"password": false
+		},
+		{
+			"id": "GROUPS",
+			"type": "promptString",
+			"description": "Comma-separated tool group IDs (e.g., 'ecommerce,browser')",
+			"password": false
+		},
+		{
+			"id": "TOOLS",
+			"type": "promptString",
+			"description": "Comma-separated tool names to enable",
+			"password": false
+		},
+		{
+			"id": "POLLING_TIMEOUT",
+			"type": "promptString",
+			"description": "Polling timeout in seconds for web_data_* tools (default: 600)",
+			"password": false
+		},
+		{
+			"id": "BASE_TIMEOUT",
+			"type": "promptString",
+			"description": "Request timeout in seconds for base tools (search & scrape). No limit if unset",
+			"password": false
+		},
+		{
+			"id": "BASE_MAX_RETRIES",
+			"type": "promptString",
+			"description": "Max retries for base tools on transient errors (0-3, default: 0)",
+			"password": false
+		}
+	]
+}

@@ -1,0 +1,27 @@
+# Porn / Gambling Keywords
+# These keywords flag potential association with adult or gambling content
+# If an audited website ranks for any of these, it is flagged for review
+
+# ── GAMBLING ─────────────────────────────────────────────────────────────────
+casino
+gambling
+slots
+bingo
+gamble
+poker
+betting
+jackpot
+roulette
+blackjack
+
+# ── ADULT / PORNOGRAPHY ───────────────────────────────────────────────────────
+porn
+pornography
+xxx
+adult content
+adult website
+milf
+tadafil
+viagra
+sex
+
