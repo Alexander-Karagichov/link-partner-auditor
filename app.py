@@ -138,6 +138,7 @@ def _results_to_df(results: list[AuditResult], show_anchor: bool = True) -> pd.D
         row = {
             "Domain": r.domain,
             "Risk": r.risk_level,
+            "PBN Risk": r.pbn.get("pbn_risk", "") if r.pbn else "",
             "Niche": r.ai_analysis.get("website_niche", "") if r.ai_analysis else "",
             "Authority Score": r.authority_score,
             "Organic Traffic": r.organic_traffic,
@@ -196,7 +197,7 @@ def render_sidebar() -> None:
 
         st.divider()
         st.subheader("Keyword Files")
-        core_path = settings.CORE_KEYWORDS_FILE
+        core_path = settings.SEMRUSH_CORE_KEYWORDS_FILE
         pg_path = settings.PORN_GAMBLING_KEYWORDS_FILE
         lb_path = settings.LINKBUILDING_TARGETS_FILE
 
@@ -345,7 +346,36 @@ def render_domain_detail(result: AuditResult) -> None:
             if result.ai_analysis.get("recommendation"):
                 st.info(f"💡 **Recommendation:** {result.ai_analysis['recommendation']}")
 
+        # ── PBN / link-network banner ──────────────────────────────────────
+        if result.pbn and result.pbn.get("pbn_risk"):
+            _pbn_risk = result.pbn.get("pbn_risk", "UNKNOWN")
+            _pbn_emoji = {"LOW": "🟢", "MEDIUM": "🟠", "HIGH": "🔴"}.get(_pbn_risk, "❓")
+            st.markdown(
+                f"**{_pbn_emoji} PBN / Link-Network Risk: {_pbn_risk}**  "
+                f"(signal score {result.pbn.get('pbn_score', 0)}/100)"
+            )
+            if result.pbn.get("reasoning"):
+                st.caption(result.pbn["reasoning"])
+            for _rsn in (result.pbn.get("reasons") or []):
+                st.markdown(f"- {_rsn}")
+            _net = result.pbn.get("network") or {}
+            _age = (result.pbn.get("domain_age") or {}).get("age_days")
+            _meta = []
+            if _age is not None:
+                _meta.append(f"domain age {_age} days")
+            if _net.get("ip"):
+                _meta.append(f"IP {_net['ip']}")
+            if _net.get("nameservers"):
+                _meta.append("NS " + ", ".join(_net["nameservers"][:2]))
+            if _meta:
+                st.caption(" · ".join(_meta))
+
         st.divider()
+
+        if getattr(result, "early_failed", False):
+            st.error(f"🛑 HARD FAIL — {result.early_fail_reason}")
+            if result.bad_links_found:
+                st.dataframe(pd.DataFrame(result.bad_links_found), use_container_width=True, hide_index=True)
 
         # ── Metric row ─────────────────────────────────────────────────────
         tabs = st.tabs(["📈 SEO Metrics", "🔑 SEMrush Rankings", "🌍 SERP Check", "🔗 Links & Page Check", "🔗 Link Building", "📋 Raw Data"])
@@ -365,6 +395,14 @@ def render_domain_detail(result: AuditResult) -> None:
                 st.caption(f"⚠️ SEO data error: {result.seo_error}")
             if result.backlinks_error:
                 st.caption(f"⚠️ Backlinks data error: {result.backlinks_error}")
+            if getattr(result, "top_countries", None):
+                st.caption("Markets checked: " + ", ".join(result.top_countries))
+                if result.traffic_by_country:
+                    _tbc = sorted(result.traffic_by_country.items(), key=lambda kv: kv[1], reverse=True)[:8]
+                    st.dataframe(
+                        pd.DataFrame(_tbc, columns=["Country DB", "Organic Traffic"]),
+                        use_container_width=True, hide_index=True,
+                    )
 
         # Tab 1 – Rankings
         with tabs[1]:
@@ -390,8 +428,6 @@ def render_domain_detail(result: AuditResult) -> None:
                     )
                 else:
                     st.success("No porn/gambling keyword rankings found.")
-            if result.rankings_error:
-                st.caption(f"⚠️ Rankings error: {result.rankings_error}")
 
         # Tab 3 – Links & Page Check (merged)
         with tabs[3]:
@@ -483,6 +519,22 @@ def render_domain_detail(result: AuditResult) -> None:
             else:
                 st.success("No competitor links found across the site.")
 
+            st.subheader("Reciprocal Links & Legitimacy")
+            bl = getattr(result, "business_legitimacy", {}) or {}
+            if bl:
+                _sig = ", ".join(k for k, v in (bl.get('signals') or {}).items() if v) or "none"
+                st.caption(
+                    f"Business legitimacy: {'✅ legit' if bl.get('is_legit') else '⚠️ weak'} "
+                    f"(score {bl.get('score', 0)}) — signals: {_sig}"
+                )
+            recip = getattr(result, "reciprocal_links", []) or []
+            back = [r for r in recip if r.get("links_back")]
+            if back:
+                st.error(f"🔁 {len(back)} strange site(s) link back — reciprocal link-scheme pattern.")
+                st.dataframe(pd.DataFrame(recip), use_container_width=True, hide_index=True)
+            elif recip:
+                st.success(f"Checked {len(recip)} strange outbound site(s); none link back.")
+
         # Tab 2 – SERP Check
         with tabs[2]:
             st.markdown("**Google `site:` search for porn/gambling content**")
@@ -500,6 +552,16 @@ def render_domain_detail(result: AuditResult) -> None:
                 )
             else:
                 st.success("No adult/gambling pages found via Google site: search.")
+
+            st.divider()
+            st.markdown("**Google `site:` search for core-business content**")
+            if getattr(result, "serp_core_error", None):
+                st.caption(f"⚠️ Core SERP error: {result.serp_core_error}")
+            if getattr(result, "serp_core_results", None):
+                st.success(f"✅ Google indexes {len(result.serp_core_results)} core-business page(s).")
+                st.dataframe(pd.DataFrame(result.serp_core_results), use_container_width=True, hide_index=True)
+            else:
+                st.info("No core-business pages surfaced via Google site: search.")
 
         # Tab 4 – Link Building Recommendation
         with tabs[4]:
@@ -534,8 +596,9 @@ def main() -> None:
     render_sidebar()
 
     st.title("🔍 Website Audit Automation")
+    _ai_label = "Claude" if (_imports_ok and settings.LLM_PROVIDER == "anthropic") else "OpenAI"
     st.caption(
-        "Powered by **SEMrush** · **Bright Data** · **OpenAI**  |  "
+        f"Powered by **SEMrush** · **Bright Data** · **{_ai_label}**  |  "
         f"Date: {datetime.now().strftime('%B %d, %Y')}"
     )
 
@@ -763,8 +826,10 @@ def main() -> None:
 | Risk scoring & analysis | OpenAI GPT-4o |
 
 **Keyword files** (editable in `/keywords/`):
-- `bright_data_core_keywords.txt` – Bright Data's core business keywords
-- `porn_gambling_keywords.txt` – adult & gambling terms to flag
+- `semrush_core_business_keywords.txt` – your business keywords → SEMrush rank + position check
+- `serp_core_business_keywords.txt` – your business keywords → Google `site:` check (Bright Data)
+- `semrush_porn_gambling_keywords.txt` – danger terms → SEMrush rank + position check
+- `serp_porn_gambling_keywords.txt` – danger terms → Google `site:` check (Bright Data)
 
 **Bad sites list** (editable in `/data/known_bad_sites.txt`):
 A curated list of known shady gambling and adult affiliate sites.

@@ -1,0 +1,19 @@
+# ============================================================
+# CORE BUSINESS KEYWORDS — SEO rank-POSITION check
+# ============================================================
+# For each keyword, the auditor asks your SEO provider: does this domain rank
+# for it, and AT WHAT POSITION? (e.g. "project management software" -> position 4)
+#
+# COST: ~10 SEO API units per keyword, per domain. More keywords = more units.
+# Phrases are fine. One keyword per line; # = comment.
+# Separate from the SERP core list (serp_core_business_keywords.txt).
+#
+# EXAMPLES ONLY — replace these with the keywords your own business targets.
+# ============================================================
+
+project management software
+team collaboration tool
+crm software
+email marketing platform
+help desk software
+your brand name

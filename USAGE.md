@@ -2,16 +2,14 @@
 
 ## Starting the app
 
-Open a terminal in `/workspaces/codespaces-blank` and run:
+Install dependencies, then run:
 
 ```bash
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Then in VS Code:
-1. Click the **Ports** tab (bottom panel)
-2. Find port **8501** → make sure Visibility is **Public**
-3. Click the 🌐 globe icon to open the app in your browser
+Open http://localhost:8501 in your browser.
 
 ---
 
@@ -21,12 +19,15 @@ Edit `.env` and fill in:
 
 | Variable | Where to get it |
 |---|---|
-| `SEMRUSH_API_KEY` | semrush.com → Account → API |
+| `SEO_PROVIDER` | `semrush` (default) or `dataforseo` |
+| `SEMRUSH_API_KEY` | semrush.com → Account → API (if `SEO_PROVIDER=semrush`) |
+| `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | app.dataforseo.com/api-access (if `SEO_PROVIDER=dataforseo`) |
 | `BRIGHTDATA_API_KEY` | brightdata.com/cp/setting/users |
 | `BRIGHTDATA_WEB_UNLOCKER_ZONE` | Default: `web_unlocker1` |
 | `BRIGHTDATA_SERP_ZONE` | Default: `serp_api_marketing_make_com` |
-| `OPENAI_API_KEY` | platform.openai.com/api-keys |
-| `OPENAI_MODEL` | e.g. `gpt-4o` |
+| `LLM_PROVIDER` | `openai` (default) or `anthropic` |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | platform.openai.com/api-keys, e.g. `gpt-5.2` |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | console.anthropic.com, e.g. `claude-opus-4-8` |
 
 ---
 
@@ -34,9 +35,11 @@ Edit `.env` and fill in:
 
 | File | Purpose |
 |---|---|
-| `keywords/bright_data_core_keywords.txt` | Bright Data business keywords to flag if competitors rank for them |
-| `keywords/porn_gambling_keywords.txt` | Adult/gambling terms to flag |
-| `data/known_bad_sites.txt` | Known shady domains to detect as outbound links |
+| `keywords/semrush_core_business_keywords.txt` | Your business keywords — SEMrush rank + position check |
+| `keywords/serp_core_business_keywords.txt` | Your business keywords — Google site: check (Bright Data) |
+| `keywords/semrush_porn_gambling_keywords.txt` | Adult/gambling terms to flag |
+| `data/known_bad_sites.txt` | Known shady domains to detect as outbound links; powers the homepage hard-fail gate |
+| `data/legit_domains.txt` | Known-good outbound domains; ignored by link-scheme scoring |
 
 One entry per line. Lines starting with `#` are comments.
 

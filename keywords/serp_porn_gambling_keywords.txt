@@ -1,0 +1,25 @@
+# ============================================================
+# SERP CHECK TERMS  —  Google "site:<domain> <term>" checks (via Bright Data)
+# ============================================================
+# For each term below, the auditor runs ONE Google search:  site:<domain> <term>
+# to see whether the domain has pages indexed for that topic.
+#
+# COST WARNING: each term = 1 Bright Data request PER domain audited.
+#   More terms = more requests = slower + higher Bright Data cost.
+#   Keep this list SHORT and BROAD (head terms catch the most pages).
+#   A hard cap (SERP_MAX_TERMS in .env, default 10) bounds it regardless.
+#
+# Rules: one single word per line; lines starting with # are comments.
+# NOTE: This list is SEPARATE from semrush_porn_gambling_keywords.txt (which feeds the
+#       SEMrush ranking checks). Edit each for its own purpose.
+# ============================================================
+casino
+gambling
+porn
+sex
+xxx
+betting
+slots
+escort
+blackjack
+poker

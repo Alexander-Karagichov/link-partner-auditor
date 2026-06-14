@@ -1,0 +1,41 @@
+# Known-good outbound domains. A homepage linking to these is NOT suspicious.
+# Match is by registrable host or any subdomain (e.g. maps.google.com matches google.com).
+# One domain per line. Lines starting with # are comments. Update as needed.
+
+# Social
+facebook.com
+instagram.com
+linkedin.com
+youtube.com
+twitter.com
+x.com
+tiktok.com
+pinterest.com
+reddit.com
+threads.net
+wa.me
+whatsapp.com
+t.me
+telegram.org
+
+# Maps / reviews / trust
+google.com
+goo.gl
+maps.google.com
+trustpilot.com
+yelp.com
+bbb.org
+
+# Payments / commerce trust badges
+paypal.com
+stripe.com
+visa.com
+mastercard.com
+shopify.com
+
+# Dev / tooling / info
+github.com
+gitlab.com
+wikipedia.org
+openai.com
+anthropic.com

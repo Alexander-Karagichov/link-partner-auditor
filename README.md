@@ -7,7 +7,7 @@
 [![Powered by Bright Data](https://img.shields.io/badge/Powered%20by-Bright%20Data-orange)](https://brightdata.com/)
 [![Streamlit](https://img.shields.io/badge/UI-Streamlit-red)](https://streamlit.io/)
 
-Built with [Bright Data](https://brightdata.com/?utm_source=link-partner-auditor-os) web infrastructure for reliable scraping + SERP data, SEMrush for SEO intelligence, and OpenAI for AI-powered risk scoring.
+Built with [Bright Data](https://brightdata.com/?utm_source=link-partner-auditor-os) for reliable scraping + SERP data, a **swappable SEO provider** (SEMrush **or** DataForSEO), and a **swappable LLM** (OpenAI **or** Anthropic Claude) for AI-powered risk scoring. Pick your providers with two env vars — no code changes.
 
 ---
 
@@ -46,7 +46,8 @@ The auditor runs **7 checks in parallel** for every domain:
 | 🔗 Homepage link check | Bad outbound links using known-bad domain list + AI |
 | 🔎 Deep page audit | Top-10 flagged pages scraped and checked for bad links |
 | 🤖 AI classification | OpenAI classifies external links the list might miss |
-| 💡 AI risk summary | GPT-4o assigns a risk level + actionable recommendation |
+| 💡 AI risk summary | The LLM assigns a risk level + actionable recommendation |
+| 🕵️ PBN / link-network check | Flags private-blog-network / link-farm patterns: topic mismatch (homepage vs. rankings), backlinks-without-audience, link-network outbound, domain age, and shared hosting across the batch |
 
 **Output:**
 
@@ -92,79 +93,100 @@ Open [http://localhost:8501](http://localhost:8501), paste domains, click **Star
 
 ## ⚙️ Configuration
 
-Copy `.env.example` to `.env` and fill in:
+Copy `.env.example` to `.env` and fill in the providers you use. The two
+provider switches are:
 
 ```env
-# SEMrush API key — semrush.com → Account → API
+# SEO data: "semrush" (default) or "dataforseo"
+SEO_PROVIDER=semrush
 SEMRUSH_API_KEY=your_key_here
+# …or, for DataForSEO:
+# SEO_PROVIDER=dataforseo
+# DATAFORSEO_LOGIN=your_login
+# DATAFORSEO_PASSWORD=your_password
 
-# Bright Data API key — brightdata.com/cp/setting/users
+# AI: "openai" (default) or "anthropic"
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-5.2
+# …or, for Claude:
+# LLM_PROVIDER=anthropic
+# ANTHROPIC_API_KEY=your_key_here
+# ANTHROPIC_MODEL=claude-opus-4-8
+
+# Scraping + SERP (always required) — brightdata.com/cp/setting/users
 BRIGHTDATA_API_KEY=your_key_here
 BRIGHTDATA_WEB_UNLOCKER_ZONE=web_unlocker1
-BRIGHTDATA_SERP_ZONE=serp_api_zone_name
-
-# OpenAI
-OPENAI_API_KEY=your_key_here
-OPENAI_MODEL=gpt-4o
-
-# Tuning
-MAX_CONCURRENT_AUDITS=3
-REQUEST_TIMEOUT=30
-MAX_KEYWORDS_CHECK=50
+BRIGHTDATA_SERP_ZONE=serp_api_marketing_make_com
 ```
 
-### Keyword files (fully editable)
+See [`.env.example`](.env.example) for the full list, including throughput
+tuning (`INNER_CONCURRENCY`, `MAX_DEEP_PAGES_PER_DOMAIN`, …).
 
-| File | Purpose |
-|---|---|
-| `keywords/porn_gambling_keywords.txt` | Terms to flag in SEMrush rankings + SERP |
-| `keywords/bright_data_core_keywords.txt` | Your business keywords (competitor detection) |
-| `keywords/linkbuilding_targets.txt` | `Keyword - URL` pairs for anchor suggestions |
-| `data/known_bad_sites.txt` | Known shady domains to detect as outbound links |
-| `data/competitor_sites.txt` | Your competitors' domains |
+### Keyword / data files (fully editable)
 
-One entry per line. Lines starting with `#` are comments.
+Each list feeds a different stage of the audit — and a different cost.
+**⚠️ More terms = more API calls per domain.** The two lists below that hit paid
+APIs are deliberately separate so you can tune each independently:
+
+| File | Feeds | Cost per extra term |
+|---|---|---|
+| `keywords/serp_porn_gambling_keywords.txt` | Google `site:<domain> <term>` checks via **Bright Data** | **1 Bright Data request per domain** (hard-capped by `SERP_MAX_TERMS`, default 10) |
+| `keywords/semrush_porn_gambling_keywords.txt` | Danger terms → **SEMrush** rank + position check | ~10 units per term, per market |
+| `keywords/semrush_core_business_keywords.txt` | Your business keywords → **SEMrush** rank + position check | ~10 units per keyword, per market |
+| `keywords/serp_core_business_keywords.txt` | Your business keywords → Google `site:` check via **Bright Data** | 1 Bright Data request per keyword (capped by `SERP_MAX_TERMS`) |
+| `keywords/linkbuilding_targets.txt` | `Keyword - URL` pairs the AI picks anchor suggestions from | none |
+| `data/known_bad_sites.txt` | Domains flagged as bad outbound links; also powers the homepage hard-fail gate | none (local match) |
+| `data/legit_domains.txt` | Known-good outbound domains ignored by link-scheme scoring | none (local match) |
+| `data/competitor_sites.txt` | Your competitor domains | none (local match) |
+
+One entry per line; lines starting with `#` are comments. After editing, click
+**Reload lists** in the app (or restart). `serp_porn_gambling_keywords.txt` and
+`semrush_porn_gambling_keywords.txt` are **separate on purpose** — one drives the Bright
+Data Google checks, the other the SEMrush ranking checks.
 
 ---
 
 ## 🔄 Swappable Providers
 
-The codebase is deliberately modular. Each data source lives in its own service file:
+The tool is vendor-neutral by design — **no provider is hard-wired.** Two
+dispatchers pick the backend at runtime from an env var:
 
-```
-services/
-  semrush_service.py       ← swap for DataForSEO, Ahrefs, Moz, SpyFu
-  bright_data_service.py   ← swap for Apify, Oxylabs, ScraperAPI, Playwright
-  openai_service.py        ← swap for Anthropic Claude, Google Gemini, Ollama
-  link_checker_service.py  ← pure Python, no external dependency
-```
+| Capability | Dispatcher | `env` switch | Built-in options |
+|---|---|---|---|
+| SEO data | `services/seo_service.py` | `SEO_PROVIDER` | `semrush`, `dataforseo` |
+| AI scoring | `services/llm_service.py` | `LLM_PROVIDER` | `openai`, `anthropic` |
+| Scraping + SERP | `services/bright_data_service.py` | — | Bright Data |
 
-### Using DataForSEO instead of SEMrush
+Switching is just an env change — e.g. `SEO_PROVIDER=dataforseo` or
+`LLM_PROVIDER=anthropic` — then restart. No code edits.
 
-Each service exposes a small typed interface. To swap SEMrush for DataForSEO:
+### Adding a new SEO provider (Ahrefs, Moz, SpyFu, …)
 
-1. Create `services/dataforseo_service.py` returning the same dataclasses (`DomainOverview`, `BacklinksOverview`, `OrganicRankings`)
-2. Update the import in `audit/audit_engine.py`:
+1. Create `services/<name>_service.py` implementing the four functions in the
+   shared interface (`services/seo_models.py`), returning the shared dataclasses
+   (`DomainOverview`, `BacklinksOverview`, `OrganicRankings`, `OrganicKeyword`):
    ```python
-   # from services import semrush_service as semrush
-   from services import dataforseo_service as semrush
+   get_domain_overview(domain)             -> DomainOverview
+   get_backlinks_overview(domain)          -> BacklinksOverview
+   get_organic_rankings(domain, limit)     -> OrganicRankings
+   get_organic_keywords_for_terms(domain, terms) -> list[OrganicKeyword]
    ```
-3. Add your DataForSEO credentials to `.env`
+2. Register it in `services/seo_service.py` under a new `SEO_PROVIDER` value.
 
-### Using a different LLM
+`services/dataforseo_service.py` is a complete worked example.
 
-The AI service in `services/openai_service.py` takes plain dicts in and returns plain dicts out. To use Anthropic Claude:
+### Adding a new LLM (Gemini, Ollama, …)
 
-1. Create `services/anthropic_service.py` with the same `analyze_audit()` and `recommend_link_building()` signatures
-2. Swap the import in `audit/audit_engine.py`
+Implement `chat_json(system_prompt, user_prompt, max_tokens) -> str` in
+`services/<name>_service.py` and register it in `services/llm_service.py` under
+a new `LLM_PROVIDER` value. (`services/anthropic_service.py` is the example.)
 
 ### Using a different scraper
 
-`services/bright_data_service.py` exposes two functions:
-- `scrape_page(url) → (html, error)`
-- `serp_search(query, num_results) → list[dict]`
-
-Any scraper that returns those shapes is a drop-in replacement.
+`services/bright_data_service.py` exposes `scrape_page(url) → (html, error)` and
+`serp_search(query, num_results) → list[dict]`. Any scraper returning those
+shapes is a drop-in replacement.
 
 ---
 
@@ -197,6 +219,24 @@ data/                       ← Known bad sites + competitor list
 
 SERP results are **confirmed** only if the matched keyword appears in the URL path — unrelated Google false-positives (e.g. `site:domain.com casino` → `/recipes/`) are filtered out.
 
+### Homepage gambling/adult hard-fail gate
+
+The audit scrapes the homepage **first**. If any outbound link resolves to a domain in `data/known_bad_sites.txt`, or the AI classifies the linked site as gambling/adult, the domain is immediately assigned risk **BAD** and all remaining checks are skipped. This saves API quota for clear-cut rejects.
+
+### Reciprocity check (PBN / link-scheme signal)
+
+Outbound links found on the audited site are classified into three buckets:
+
+- **own-entity** — same registrable domain as the audited site
+- **allowlisted-legit** — present in `data/legit_domains.txt`
+- **strange** — everything else
+
+For each *strange* domain (up to `RECIPROCAL_MAX_CHECKS`, default 10), the engine fetches that page and checks whether it links back to the audited site. A reciprocal link between two otherwise unrelated domains is a strong PBN/link-scheme signal and raises the risk score. Set `ENABLE_RECIPROCITY=false` to disable this step.
+
+### Business-legitimacy check
+
+The audited site (and any reciprocating partner pages) is scanned for standard legitimacy signals: contact email, phone number, physical address, schema.org `Organization` / `LocalBusiness` markup, and the presence of `/contact` or `/about` pages. Missing several of these signals contributes to a higher risk score.
+
 ---
 
 ## 📦 Dependencies
@@ -209,6 +249,7 @@ lxml               — Fast HTML parser
 pandas             — Data tables & export
 openpyxl           — Excel export
 openai             — OpenAI API client
+anthropic          — Anthropic Claude API client
 python-dotenv      — .env loading
 ```
 

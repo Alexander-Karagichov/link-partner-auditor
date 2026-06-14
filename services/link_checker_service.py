@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -153,7 +153,7 @@ def _extract_domain(href: str) -> str:
     """Return lowercase netloc from an href, or '' if unparseable."""
     try:
         parsed = urlparse(href)
-        return parsed.netloc.lower().lstrip("www.")
+        return parsed.netloc.lower().removeprefix("www.")
     except Exception:
         return ""
 
@@ -241,7 +241,7 @@ def keyword_links_present(html: str, keywords: list[str], source_domain: str = "
 
     flags: list[str] = []
     kw_patterns = [(kw, re.compile(re.escape(kw), re.IGNORECASE)) for kw in keywords]
-    norm_source = source_domain.lower().lstrip("www.")
+    norm_source = source_domain.lower().removeprefix("www.")
 
     for tag in soup.find_all("a", href=True):
         href: str = tag["href"].strip()
@@ -322,3 +322,184 @@ def extract_body_external_links(html: str, source_url: str) -> list[str]:
             links.append(href)
 
     return links
+
+
+def extract_all_external_links(html: str, source_url: str) -> list[str]:
+    """
+    Like extract_body_external_links but INCLUDES nav/header/footer links.
+    Reciprocal/PBN links commonly live in footers and blogrolls, so the
+    outbound-classification and reciprocity checks must see them.
+
+    Returns a deduplicated list of external href strings.
+    """
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        return []
+
+    source_domain = _extract_domain(source_url)
+    seen: set[str] = set()
+    links: list[str] = []
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"].strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        href_domain = _extract_domain(href)
+        if not href_domain:
+            continue
+        if source_domain and href_domain.endswith(source_domain):
+            continue  # internal
+        if href not in seen:
+            seen.add(href)
+            links.append(href)
+    return links
+
+
+def extract_hreflang_alternates(html: str) -> set[str]:
+    """
+    Return the set of domains declared as language/region alternates via
+    <link rel="alternate" hreflang="..." href="..."> — these are the same
+    company's other-language sites (e.g. brightdata.es for brightdata.com)
+    and must be treated as own-entity, not strange outbound links.
+    """
+    out: set[str] = set()
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        return out
+    for tag in soup.find_all("link", attrs={"rel": True, "href": True}):
+        rels = tag.get("rel") or []
+        rels = rels if isinstance(rels, list) else [rels]
+        if "alternate" not in [r.lower() for r in rels]:
+            continue
+        if not tag.get("hreflang"):
+            continue
+        d = _extract_domain(tag["href"].strip())
+        if d:
+            out.add(d)
+    return out
+
+
+def links_back(partner_html: str, partner_url: str, audited_domain: str) -> bool:
+    """
+    Return True if the partner page links back to *audited_domain* anywhere
+    (body, nav, or footer). Used for reciprocal-link detection.
+    """
+    if not partner_html or not audited_domain:
+        return False
+    audited = audited_domain.lower().removeprefix("www.")
+    for href in extract_all_external_links(partner_html, partner_url):
+        d = _extract_domain(href)
+        if d and (d == audited or d.endswith("." + audited)):
+            return True
+    return False
+
+
+# ── Niche / "what is this site" helpers ────────────────────────────────────────
+
+def extract_page_text(html: str, max_chars: int = 3000) -> str:
+    """
+    Extract a clean, readable summary of what a page is about: the <title>,
+    meta description, headings, and the leading body text — with script/style
+    and nav/footer/header chrome stripped. Used to give the LLM real context
+    about the business instead of guessing the niche from ranking keywords.
+    """
+    if not html:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        return ""
+
+    parts: list[str] = []
+
+    title = soup.title.get_text(strip=True) if soup.title else ""
+    if title:
+        parts.append(f"Title: {title}")
+
+    meta = soup.find("meta", attrs={"name": "description"}) or soup.find(
+        "meta", attrs={"property": "og:description"}
+    )
+    meta_desc = (meta.get("content") or "").strip() if meta else ""
+    if meta_desc:
+        parts.append(f"Description: {meta_desc}")
+
+    # Strip noise before pulling headings/body text.
+    for tag in soup(["script", "style", "noscript", "nav", "footer", "header", "svg"]):
+        tag.decompose()
+
+    headings = [
+        h.get_text(" ", strip=True)
+        for h in soup.find_all(["h1", "h2"])
+        if h.get_text(strip=True)
+    ][:8]
+    if headings:
+        parts.append("Headings: " + " | ".join(headings))
+
+    body_text = " ".join(soup.get_text(separator=" ").split())
+    if body_text:
+        parts.append("Body: " + body_text)
+
+    return "\n".join(parts)[:max_chars]
+
+
+# Anchor text / href fragments that indicate an "about the company" page.
+_ABOUT_HINTS = (
+    "about-us", "about_us", "aboutus", "/about", "about/",
+    "who-we-are", "who-we-are", "our-story", "our-company", "company",
+    "אודות", "מי-אנחנו", "о-нас", "о-компании", "qui-sommes",
+)
+_ABOUT_TEXT_HINTS = (
+    "about", "about us", "who we are", "our story", "company",
+    "אודות", "מי אנחנו", "о нас",
+)
+
+
+def find_about_url(html: str, base_url: str) -> Optional[str]:
+    """
+    Find the most likely "About" page URL by inspecting the homepage's own
+    links (href fragments + anchor text), in multiple languages. Returns an
+    absolute URL, or None. This beats blindly guessing /about paths.
+    """
+    if not html:
+        return None
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        return None
+
+    source_domain = _extract_domain(base_url)
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"].strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        text = tag.get_text(" ", strip=True).lower()
+        href_l = href.lower()
+        if any(h in href_l for h in _ABOUT_HINTS) or text in _ABOUT_TEXT_HINTS:
+            absolute = urljoin(base_url, href)
+            # Keep it on the same site
+            if not source_domain or _extract_domain(absolute).endswith(source_domain):
+                return absolute
+    return None
+
+
+def external_domain_profile(html: str, source_url: str) -> dict:
+    """
+    Summarise the body's outbound external links for PBN/link-farm scoring:
+    how many distinct external domains are linked from the page body.
+
+    Returns {"distinct_external_domains": int, "external_domains": [..sample..]}.
+    A page linking out to many unrelated external domains is a link-network tell.
+    """
+    links = extract_body_external_links(html, source_url)
+    domains: list[str] = []
+    seen: set[str] = set()
+    for href in links:
+        d = _extract_domain(href)
+        if d and d not in seen:
+            seen.add(d)
+            domains.append(d)
+    return {
+        "distinct_external_domains": len(domains),
+        "external_domains": domains[:40],
+    }

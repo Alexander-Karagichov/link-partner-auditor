@@ -1,7 +1,0 @@
-# Core business keywords (EXAMPLES — replace with your own).
-project management software
-team collaboration tool
-crm software
-email marketing platform
-help desk software
-your brand name

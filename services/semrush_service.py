@@ -25,45 +25,22 @@ logger = logging.getLogger(__name__)
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"Accept": "text/plain"})
+# Larger connection pool so concurrent audits don't exhaust it. The default
+# pool_maxsize=10 caused "Connection pool is full, discarding connection"
+# churn (and wasted reconnects) under parallel load.
+_ADAPTER = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=64, max_retries=2)
+_SESSION.mount("https://", _ADAPTER)
+_SESSION.mount("http://", _ADAPTER)
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
-
-@dataclass
-class DomainOverview:
-    domain: str
-    authority_score: Optional[int] = None
-    organic_traffic: Optional[int] = None
-    organic_keywords: Optional[int] = None
-    paid_keywords: Optional[int] = None
-    error: Optional[str] = None
-
-
-@dataclass
-class BacklinksOverview:
-    domain: str
-    total_backlinks: Optional[int] = None
-    referring_domains: Optional[int] = None
-    referring_ips: Optional[int] = None
-    follow_links: Optional[int] = None
-    nofollow_links: Optional[int] = None
-    authority_score: Optional[int] = None
-    error: Optional[str] = None
-
-
-@dataclass
-class OrganicKeyword:
-    phrase: str
-    position: int
-    search_volume: Optional[int] = None
-    url: Optional[str] = None
-
-
-@dataclass
-class OrganicRankings:
-    domain: str
-    keywords: list[OrganicKeyword] = field(default_factory=list)
-    error: Optional[str] = None
+# Shared models live in seo_models so every SEO provider returns identical types.
+from services.seo_models import (  # noqa: E402
+    DomainOverview,
+    BacklinksOverview,
+    OrganicKeyword,
+    OrganicRankings,
+)
 
 
 @dataclass
@@ -147,57 +124,51 @@ def _clean_domain(domain: str) -> str:
 
 # ── Public API functions ───────────────────────────────────────────────────────
 
-# SEMrush's "worldwide" organic traffic in the UI is a sum of their major
-# country databases. There is no single worldwide endpoint, so we query each
-# major database in parallel and sum the results.
-_SEMRUSH_MAJOR_DATABASES = [
-    "us", "uk", "ca", "au", "in", "ph", "br", "de", "my", "sg",
-    "id", "nl", "za", "ng", "mx", "fr", "ru", "tr", "pl", "cl",
-    "th", "ar", "kr", "jp", "es", "it", "vn", "co", "eg", "ve",
-    "pe", "nz", "gr", "se", "no", "dk", "fi", "be", "at", "ch",
-    "cz", "hu", "ro", "ua", "il", "ae", "sa", "pk",
-]
+def get_domain_overview(domain: str) -> DomainOverview:
+    """
+    Fetch domain-level SEO metrics from SEMrush in a SINGLE all-databases call.
 
-
-def _fetch_db_traffic(domain: str, db: str) -> tuple[int, int]:
-    """Fetch (organic_traffic, organic_keywords) for one database. Returns (0,0) on error."""
+    `type=domain_ranks` with NO `database` parameter returns one row per regional
+    database the domain ranks in. We sum organic traffic/keywords across rows for
+    a worldwide figure, and expose the per-country breakdown + the top databases
+    by traffic — used to target the deeper ranking checks at the site's real
+    markets instead of a hardcoded US default. One request replaces the old
+    48-call sweep (much faster, no connection-pool thrash).
+    """
+    domain = _clean_domain(domain)
+    result = DomainOverview(domain=domain)
     try:
         params = {
             "type": "domain_ranks",
             "key": _api_key(),
             "domain": domain,
-            "database": db,
-            "export_columns": "Dn,Or,Ot",
+            "export_columns": "Db,Dn,Or,Ot",
         }
         resp = _get(settings.SEMRUSH_API_BASE + "/", params)
-        data = _parse_kv_response(resp.text)
-        traffic = _safe_int(data.get("Organic Traffic") or data.get("Ot")) or 0
-        keywords = _safe_int(data.get("Organic Keywords") or data.get("Or")) or 0
-        return traffic, keywords
-    except Exception:
-        return 0, 0
+        rows = _parse_tabular_response(resp.text)
 
-
-def get_domain_overview(domain: str) -> DomainOverview:
-    """
-    Fetch domain-level SEO metrics from SEMrush.
-
-    Queries all major country databases in parallel and sums the results
-    to approximate SEMrush's worldwide organic traffic figure.
-    """
-    domain = _clean_domain(domain)
-    result = DomainOverview(domain=domain)
-    try:
         total_traffic = 0
         total_keywords = 0
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            futures = {pool.submit(_fetch_db_traffic, domain, db): db for db in _SEMRUSH_MAJOR_DATABASES}
-            for future in as_completed(futures):
-                t, k = future.result()
-                total_traffic += t
-                total_keywords += k
-        result.organic_traffic = total_traffic if total_traffic else None
-        result.organic_keywords = total_keywords if total_keywords else None
+        by_country: dict[str, int] = {}
+        for row in rows:
+            db = (row.get("Database") or row.get("Db") or "").strip()
+            ot = _safe_int(row.get("Organic Traffic") or row.get("Ot")) or 0
+            kw = _safe_int(row.get("Organic Keywords") or row.get("Or")) or 0
+            if db:
+                by_country[db] = by_country.get(db, 0) + ot
+            total_traffic += ot
+            total_keywords += kw
+
+        result.organic_traffic = total_traffic or None
+        result.organic_keywords = total_keywords or None
+        result.traffic_by_country = by_country
+        n = max(1, settings.SEMRUSH_TOP_COUNTRIES) if settings.SEMRUSH_TOP_COUNTRIES else 0
+        result.top_databases = [
+            db for db, _ in sorted(by_country.items(), key=lambda kv: kv[1], reverse=True) if db
+        ][:n] if n else []
+    except requests.HTTPError as exc:
+        result.error = f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"
+        logger.warning("SEMrush domain overview error for %s: %s", domain, result.error)
     except Exception as exc:
         result.error = str(exc)
         logger.exception("Unexpected error fetching domain overview for %s", domain)
@@ -239,104 +210,142 @@ def get_backlinks_overview(domain: str) -> BacklinksOverview:
     return result
 
 
-def get_organic_rankings(domain: str, limit: int = 100) -> OrganicRankings:
-    """
-    Fetch the top organic keyword rankings for a domain.
-
-    Returns a list of OrganicKeyword objects sorted by position ascending.
-    """
-    domain = _clean_domain(domain)
-    result = OrganicRankings(domain=domain)
+def _rankings_one_db(domain: str, database: str, limit: int) -> tuple[list[OrganicKeyword], Optional[str]]:
+    """Fetch organic rankings for one database. Returns (keywords, error)."""
+    out: list[OrganicKeyword] = []
     try:
         params = {
             "type": "domain_organic",
             "key": _api_key(),
             "domain": domain,
-            "database": "us",
+            "database": database,
             "display_limit": limit,
             "display_sort": "po_asc",
             "export_columns": "Ph,Po,Nq,Ur",
         }
         resp = _get(settings.SEMRUSH_API_BASE + "/", params)
-        rows = _parse_tabular_response(resp.text)
-        for row in rows:
-            kw = OrganicKeyword(
+        for row in _parse_tabular_response(resp.text):
+            out.append(OrganicKeyword(
                 phrase=row.get("Keyword", row.get("Ph", "")),
                 position=_safe_int(row.get("Position", row.get("Po"))) or 0,
                 search_volume=_safe_int(row.get("Search Volume", row.get("Nq"))),
                 # SEMrush returns the column header as "Url" (title-case)
                 url=row.get("Url", row.get("URL", row.get("Ur", ""))),
-            )
-            result.keywords.append(kw)
+            ))
+        return out, None
     except requests.HTTPError as exc:
-        result.error = f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"
-        logger.warning("SEMrush organic error for %s: %s", domain, result.error)
+        msg = f"HTTP {exc.response.status_code}: {exc.response.text[:150]}"
+        logger.warning("SEMrush organic [%s/%s]: %s", domain, database, msg)
+        return out, msg
     except Exception as exc:
-        result.error = str(exc)
-        logger.exception("Unexpected error fetching organic rankings for %s", domain)
+        logger.warning("SEMrush organic [%s/%s]: %s", domain, database, exc)
+        return out, str(exc)
+
+
+def get_organic_rankings(domain: str, limit: int = 100, databases: Optional[list[str]] = None) -> OrganicRankings:
+    """
+    Fetch top organic keyword rankings across one or more country databases,
+    merged (dedup by phrase, keeping the best position).
+
+    `databases` defaults to ["us"]. Pass a domain's top traffic countries (from
+    DomainOverview.top_databases) to audit the markets it actually ranks in.
+    """
+    domain = _clean_domain(domain)
+    result = OrganicRankings(domain=domain)
+    dbs = [d for d in (databases or ["us"]) if d] or ["us"]
+
+    merged: dict[str, OrganicKeyword] = {}
+    first_error: Optional[str] = None
+    with ThreadPoolExecutor(max_workers=min(settings.INNER_CONCURRENCY, len(dbs))) as pool:
+        for kws, err in pool.map(lambda db: _rankings_one_db(domain, db, limit), dbs):
+            if err and first_error is None:
+                first_error = err
+            for kw in kws:
+                key = (kw.phrase or "").lower()
+                if not key:
+                    continue
+                prev = merged.get(key)
+                if prev is None or (kw.position and kw.position < (prev.position or 10**9)):
+                    merged[key] = kw
+
+    result.keywords = list(merged.values())
+    if not result.keywords and first_error:  # only surface an error if we got nothing
+        result.error = first_error
     return result
 
 
-def get_organic_keywords_for_terms(domain: str, danger_terms: list[str], limit_per_term: int = 50) -> list[OrganicKeyword]:
+def _filtered_query_one(domain: str, term: str, limit_per_term: int, database: str = "us") -> list[OrganicKeyword]:
+    """Run a single SEMrush display_filter query for one danger term in one database."""
+    out: list[OrganicKeyword] = []
+    try:
+        # Build URL manually so | in display_filter is preserved.
+        # + must be encoded as %2B (raw + means space in query strings).
+        _safe_val = lambda v: quote(str(v), safe=',|')
+        parts = [
+            f"type=domain_organic",
+            f"key={_api_key()}",
+            f"domain={quote(domain, safe='')}",
+            f"database={database}",
+            f"display_limit={limit_per_term}",
+            f"display_sort=po_asc",
+            f"export_columns=Ph,Po,Nq,Ur",
+            f"display_filter={_safe_val(f'+|Ph|Co|{term}')}",
+        ]
+        url = settings.SEMRUSH_API_BASE + "/?" + "&".join(parts)
+        resp = _SESSION.get(url, timeout=settings.REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        rows = _parse_tabular_response(resp.text)
+        for row in rows:
+            phrase = row.get("Keyword", row.get("Ph", ""))
+            if not phrase:
+                continue
+            # SEMrush returns the column as "Url" (title-case) in this report
+            url_val = row.get("Url", row.get("URL", row.get("Ur", "")))
+            out.append(OrganicKeyword(
+                phrase=phrase,
+                position=_safe_int(row.get("Position", row.get("Po"))) or 0,
+                search_volume=_safe_int(row.get("Search Volume", row.get("Nq"))),
+                url=url_val,
+            ))
+    except requests.HTTPError as exc:
+        logger.warning(
+            "SEMrush filtered organic [%s / filter:%s]: HTTP %d – %s",
+            domain, term, exc.response.status_code, exc.response.text[:100],
+        )
+    except Exception as exc:
+        logger.warning("SEMrush filtered organic [%s / filter:%s]: %s", domain, term, exc)
+    return out
+
+
+def get_organic_keywords_for_terms(domain: str, danger_terms: list[str], limit_per_term: int = 50, databases: Optional[list[str]] = None) -> list[OrganicKeyword]:
     """
-    Run one SEMrush domain_organic query per danger term using display_filter.
+    Run one SEMrush domain_organic display_filter query per (database, term),
+    concurrently, then merge the results (dedup by phrase).
 
-    Unlike get_organic_rankings() which only returns the top-N keywords by
-    position, this targets specific terms regardless of how many keywords the
-    domain ranks for overall. Catches casino/gambling terms buried beyond
-    position 50 for large domains.
-
-    Uses requests params= dict so | and + are percent-encoded correctly.
+    Targets specific danger terms regardless of overall ranking count — catches
+    casino/gambling terms buried beyond position 50. `databases` defaults to
+    ["us"]; pass the domain's top traffic countries to check its real markets.
     """
     domain = _clean_domain(domain)
+
+    # Multi-word phrases ARE supported — the filter value is URL-encoded (space
+    # -> %20), so "residential proxy" works and comes back with its position.
+    terms = [t.strip() for t in danger_terms if t.strip()]
+    if not terms:
+        return []
+    dbs = [d for d in (databases or ["us"]) if d] or ["us"]
+    jobs = [(t, db) for db in dbs for t in terms]
+
     seen: set[str] = set()
     results: list[OrganicKeyword] = []
-
-    for term in danger_terms:
-        term = term.strip()
-        # Skip multi-word terms – spaces in the filter value break SEMrush's
-        # display_filter and cause it to return unrelated top keywords instead.
-        # Multi-word terms are still covered by get_organic_rankings + _keywords_found_in_rankings.
-        if not term or " " in term:
-            continue
-        try:
-            # Build URL manually so | in display_filter is preserved.
-            # + must be encoded as %2B (raw + means space in query strings).
-            _safe_val = lambda v: quote(str(v), safe=',|')
-            parts = [
-                f"type=domain_organic",
-                f"key={_api_key()}",
-                f"domain={quote(domain, safe='')}",
-                f"database=us",
-                f"display_limit={limit_per_term}",
-                f"display_sort=po_asc",
-                f"export_columns=Ph,Po,Nq,Ur",
-                f"display_filter={_safe_val(f'+|Ph|Co|{term}')}",
-            ]
-            url = settings.SEMRUSH_API_BASE + "/?" + "&".join(parts)
-            resp = _SESSION.get(url, timeout=settings.REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            rows = _parse_tabular_response(resp.text)
-            for row in rows:
-                phrase = row.get("Keyword", row.get("Ph", ""))
-                if not phrase or phrase.lower() in seen:
+    with ThreadPoolExecutor(max_workers=min(settings.INNER_CONCURRENCY, len(jobs))) as pool:
+        futures = [pool.submit(_filtered_query_one, domain, t, limit_per_term, db) for (t, db) in jobs]
+        for fut in as_completed(futures):
+            for kw in fut.result():
+                if kw.phrase.lower() in seen:
                     continue
-                seen.add(phrase.lower())
-                # SEMrush returns the column as "Url" (title-case) in this report
-                url_val = row.get("Url", row.get("URL", row.get("Ur", "")))
-                results.append(OrganicKeyword(
-                    phrase=phrase,
-                    position=_safe_int(row.get("Position", row.get("Po"))) or 0,
-                    search_volume=_safe_int(row.get("Search Volume", row.get("Nq"))),
-                    url=url_val,
-                ))
-        except requests.HTTPError as exc:
-            logger.warning(
-                "SEMrush filtered organic [%s / filter:%s]: HTTP %d – %s",
-                domain, term, exc.response.status_code, exc.response.text[:100],
-            )
-        except Exception as exc:
-            logger.warning("SEMrush filtered organic [%s / filter:%s]: %s", domain, term, exc)
+                seen.add(kw.phrase.lower())
+                results.append(kw)
 
     return results
 

@@ -1,5 +1,6 @@
 # Secrets — never commit
 .env
+.mcp.json
 
 # Python
 __pycache__/
@@ -23,6 +24,12 @@ Thumbs.db
 # Reports / output (contain real audit data)
 reports/
 test/
+Test/
+
+# Local dev / tooling artifacts
+.claude/
+.playwright-mcp/
+lpa-*.png
 
 # Streamlit
 .streamlit/secrets.toml

@@ -1,0 +1,19 @@
+# ============================================================
+# CORE BUSINESS KEYWORDS — Google site: check
+# ============================================================
+# For each keyword, the auditor runs  site:<domain> "<keyword>"  to see whether
+# the domain has indexed pages about that topic.
+#
+# COST: 1 scraping request per keyword, per domain (capped by SERP_MAX_TERMS).
+# More keywords = more cost. One keyword per line; # = comment.
+# Separate from the SEMrush core list (semrush_core_business_keywords.txt).
+#
+# EXAMPLES ONLY — replace these with the keywords your own business targets.
+# ============================================================
+
+project management software
+team collaboration tool
+crm software
+email marketing platform
+help desk software
+your brand name
