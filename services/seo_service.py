@@ -32,3 +32,4 @@ get_domain_overview = _backend.get_domain_overview
 get_backlinks_overview = _backend.get_backlinks_overview
 get_organic_rankings = _backend.get_organic_rankings
 get_organic_keywords_for_terms = _backend.get_organic_keywords_for_terms
+get_top_traffic_pages = _backend.get_top_traffic_pages

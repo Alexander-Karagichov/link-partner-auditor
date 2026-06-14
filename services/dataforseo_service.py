@@ -201,6 +201,15 @@ def get_organic_rankings(domain: str, limit: int = 100, databases: Optional[list
     return result
 
 
+def get_top_traffic_pages(domain: str, database: str = "us", limit: int = 10) -> list:
+    """
+    Parity stub for the SEO interface. The content-farm trivia check (Check 1) is
+    SEMrush-specific; under the DataForSEO provider it is simply skipped (returns
+    no pages), so the content-farm score relies on the cheap homepage check only.
+    """
+    return []
+
+
 def get_organic_keywords_for_terms(domain: str, danger_terms: list[str], limit_per_term: int = 50, databases: Optional[list[str]] = None) -> list[OrganicKeyword]:
     """One ranked_keywords query per term (filtered by keyword substring), concurrently.
 

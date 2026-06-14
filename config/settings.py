@@ -76,6 +76,19 @@ SERP_MAX_TERMS: int = int(os.getenv("SERP_MAX_TERMS", "10"))
 RECIPROCAL_MAX_CHECKS: int = int(os.getenv("RECIPROCAL_MAX_CHECKS", "10"))
 ENABLE_RECIPROCITY: bool = os.getenv("ENABLE_RECIPROCITY", "true").strip().lower() in ("1", "true", "yes")
 
+# ── Content-farm spam score ───────────────────────────────────────────────────
+ENABLE_CONTENT_FARM: bool = os.getenv("ENABLE_CONTENT_FARM", "true").strip().lower() in ("1", "true", "yes")
+# Homepage articles sampled + scraped for the cheap trash check.
+CONTENT_FARM_SAMPLE_ARTICLES: int = int(os.getenv("CONTENT_FARM_SAMPLE_ARTICLES", "8"))
+# SEMrush rows pulled (single top market) when the check escalates. ~10 units/row.
+CONTENT_FARM_TOP_PAGES: int = int(os.getenv("CONTENT_FARM_TOP_PAGES", "10"))
+# Secondary thin-content trigger: an article under this many body words counts as trash.
+CONTENT_FARM_THIN_WORDS: int = int(os.getenv("CONTENT_FARM_THIN_WORDS", "250"))
+# Escalation triggers for the (paid) SEMrush check.
+CONTENT_FARM_ESCALATE_TRASH_SHARE: float = float(os.getenv("CONTENT_FARM_ESCALATE_TRASH_SHARE", "0.4"))
+CONTENT_FARM_ARTICLE_LINK_COUNT: int = int(os.getenv("CONTENT_FARM_ARTICLE_LINK_COUNT", "30"))
+CONTENT_FARM_KEYWORD_FOOTPRINT: int = int(os.getenv("CONTENT_FARM_KEYWORD_FOOTPRINT", "5000"))
+
 # ── File Paths ────────────────────────────────────────────────────────────────
 KEYWORDS_DIR: Path = BASE_DIR / "keywords"
 DATA_DIR: Path = BASE_DIR / "data"

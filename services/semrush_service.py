@@ -350,6 +350,47 @@ def get_organic_keywords_for_terms(domain: str, danger_terms: list[str], limit_p
     return results
 
 
+def get_top_traffic_pages(domain: str, database: str = "us", limit: int = 10) -> list[OrganicKeyword]:
+    """
+    Fetch the domain's top organic results sorted by TRAFFIC (descending) for ONE
+    database. Used by the content-farm trivia check to see what queries actually
+    drive the site's traffic. ~10 API units per row; keep `limit` small.
+    """
+    domain = _clean_domain(domain)
+    out: list[OrganicKeyword] = []
+    try:
+        params = {
+            "type": "domain_organic",
+            "key": _api_key(),
+            "domain": domain,
+            "database": database or "us",
+            "display_limit": limit,
+            "display_sort": "tr_desc",          # traffic, highest first
+            "export_columns": "Ph,Po,Nq,Ur",
+        }
+        resp = _get(settings.SEMRUSH_API_BASE + "/", params)
+        for row in _parse_tabular_response(resp.text):
+            out.append(OrganicKeyword(
+                phrase=row.get("Keyword", row.get("Ph", "")),
+                position=_safe_int(row.get("Position", row.get("Po"))) or 0,
+                search_volume=_safe_int(row.get("Search Volume", row.get("Nq"))),
+                url=row.get("Url", row.get("URL", row.get("Ur", ""))),
+            ))
+    except requests.HTTPError as exc:
+        # Log only status + a short response slice — never the full request URL,
+        # which carries the SEMrush API key as a query param.
+        logger.warning(
+            "SEMrush top-traffic pages [%s/%s]: HTTP %d – %s",
+            domain, database, exc.response.status_code, exc.response.text[:200],
+        )
+    except Exception as exc:
+        # Log the error TYPE only — non-HTTP requests errors (ConnectionError,
+        # Timeout) embed the full request URL in their message, which carries the
+        # API key as a query param.
+        logger.warning("SEMrush top-traffic pages [%s/%s]: %s", domain, database, type(exc).__name__)
+    return out
+
+
 def get_ai_overview_data(domain: str) -> AIOverviewData:
     """
     Attempt to fetch AI Search metrics from SEMrush.

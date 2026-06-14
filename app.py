@@ -370,6 +370,23 @@ def render_domain_detail(result: AuditResult) -> None:
             if _meta:
                 st.caption(" · ".join(_meta))
 
+        # ── Content-farm banner ────────────────────────────────────────────
+        cfarm = getattr(result, "content_farm", None) or {}
+        if cfarm.get("content_farm_risk"):
+            _cf_risk = cfarm.get("content_farm_risk", "UNKNOWN")
+            _cf_emoji = {"LOW": "🟢", "MEDIUM": "🟠", "HIGH": "🔴"}.get(_cf_risk, "❓")
+            st.markdown(
+                f"**{_cf_emoji} Content-Farm Risk: {_cf_risk}**  "
+                f"(score {cfarm.get('score', 0)}/100"
+                + ("" if cfarm.get("semrush_checked") else ", homepage-only — SEMrush skipped") + ")"
+            )
+            if cfarm.get("reasoning"):
+                st.caption(cfarm["reasoning"])
+            for _rsn in (cfarm.get("reasons") or []):
+                st.caption(f"• {_rsn}")
+            if cfarm.get("trash_examples"):
+                st.caption("Sample trash articles: " + ", ".join(cfarm["trash_examples"][:3]))
+
         st.divider()
 
         if getattr(result, "early_failed", False):

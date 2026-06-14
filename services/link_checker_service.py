@@ -355,6 +355,59 @@ def extract_all_external_links(html: str, source_url: str) -> list[str]:
     return links
 
 
+# Homepage path segments that are section indexes / utility pages, not articles.
+_NON_ARTICLE_SEGMENTS = {
+    "category", "categories", "tag", "tags", "author", "page", "search", "feed",
+    "contact", "about", "privacy", "terms", "cart", "checkout", "account", "login",
+    "register", "shop", "product", "products", "wp-admin", "wp-login",
+}
+_ASSET_RE = re.compile(r"\.(jpg|jpeg|png|gif|svg|webp|pdf|zip|mp4|css|js)(\?|$)", re.IGNORECASE)
+
+
+def extract_internal_article_links(html: str, base_url: str) -> list[str]:
+    """
+    Return internal, article-like links from the homepage BODY (nav/header/footer
+    excluded). 'Article-like' = an internal path whose first segment isn't a known
+    section/utility word, isn't an asset file, and whose last segment looks like a
+    slug (has a hyphen, or is reasonably long). Used by the content-farm check —
+    a homepage packed with these is a content-hub tell. Deduplicated, order kept.
+    """
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        return []
+
+    source_domain = _extract_domain(base_url)
+    seen: set[str] = set()
+    out: list[str] = []
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"].strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        if _is_nav_or_footer(tag):
+            continue
+        absolute = urljoin(base_url, href)
+        d = _extract_domain(absolute)
+        if not d or not (d == source_domain or d.endswith("." + source_domain)):
+            continue  # internal only
+        path = urlparse(absolute).path.strip("/").lower()
+        if not path:
+            continue  # homepage itself
+        segments = [s for s in path.split("/") if s]
+        if segments[0] in _NON_ARTICLE_SEGMENTS:
+            continue
+        if _ASSET_RE.search(path):
+            continue
+        slug = segments[-1]
+        if "-" not in slug and len(slug) < 8:
+            continue  # short single-word path → likely a section, not an article
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        out.append(absolute)
+    return out
+
+
 def extract_hreflang_alternates(html: str) -> set[str]:
     """
     Return the set of domains declared as language/region alternates via

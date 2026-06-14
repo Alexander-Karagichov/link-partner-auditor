@@ -367,6 +367,113 @@ def classify_link_partners(page_url: str, domains: list[str]) -> list[dict]:
         return []
 
 
+def classify_trivia_phrases(phrases: list[str]) -> dict:
+    """
+    Judge what share of a site's top ranking phrases are low-value trivia/SEO-bait
+    queries ('how many seconds in a day', unit conversions, generic 'what is X').
+    Returns {"trivia_share": float 0..1, "examples": [up to 5 phrases]}.
+    """
+    if not phrases:
+        return {"trivia_share": 0.0, "examples": []}
+    try:
+        block = "\n".join(f"- {p}" for p in phrases[:50])
+        prompt_parts = [
+            "You are judging whether a website is a content farm from its top search queries.",
+            "Below are phrases this site ranks for, ordered by traffic.",
+            "", "## Phrases", block, "",
+            "## Task",
+            "A 'trivia/low-value' query is generic informational filler with no commercial or "
+            "expert intent — e.g. 'how many seconds in a day', 'how many cups in a liter', unit "
+            "conversions, generic 'what is X' definitions. A 'real' query has topical, commercial, "
+            "or expert intent.",
+            'Return ONLY JSON: {"trivia_share": <0.0-1.0>, "examples": [up to 5 trivia phrases]}',
+        ]
+        system = "You are a meticulous SEO content-quality analyst. You always respond with valid JSON only."
+        raw = _backend.chat_json(system, "\n".join(prompt_parts), max_tokens=500)
+        parsed = _parse_json(raw)
+        try:
+            share = float(parsed.get("trivia_share", 0.0))
+        except (TypeError, ValueError):
+            share = 0.0
+        examples = parsed.get("examples", [])
+        return {"trivia_share": max(0.0, min(1.0, share)),
+                "examples": [str(e) for e in examples][:5]}
+    except Exception:
+        logger.exception("classify_trivia_phrases failed")
+        return {"trivia_share": 0.0, "examples": []}
+
+
+def classify_article_quality(articles: list[dict]) -> list[dict]:
+    """
+    Judge whether each sampled article is low-value content-farm filler.
+    `articles`: [{url, title, snippet}]. Returns [{url, is_trivia, reason}].
+    """
+    if not articles:
+        return []
+    try:
+        lines = []
+        for i, a in enumerate(articles):
+            lines.append(
+                f"[{i}] url={a.get('url', '')}\n"
+                f"    title={a.get('title', '')}\n"
+                f"    snippet={(a.get('snippet', '') or '')[:400]}"
+            )
+        prompt_parts = [
+            "You are judging whether each article below is low-value content-farm filler.",
+            "Low-value = generic trivia/SEO-bait (e.g. 'How Many Seconds in a Day'), thin or "
+            "templated filler with no real expertise. High-value = genuine, useful, expert content.",
+            "", "## Articles", "\n".join(lines), "",
+            'Return ONLY JSON with key "results": an array of '
+            '{"index": <int>, "is_trivia": <bool>, "reason": "short"} for EVERY article.',
+        ]
+        system = "You are a meticulous SEO content-quality analyst. You always respond with valid JSON only."
+        raw = _backend.chat_json(system, "\n".join(prompt_parts), max_tokens=800)
+        parsed = _parse_json(raw)
+        out: list[dict] = []
+        for it in parsed.get("results", []):
+            idx = it.get("index")
+            if isinstance(idx, int) and 0 <= idx < len(articles):
+                out.append({
+                    "url": articles[idx].get("url", ""),
+                    "is_trivia": bool(it.get("is_trivia")),
+                    "reason": str(it.get("reason", "")),
+                })
+        return out
+    except Exception:
+        logger.exception("classify_article_quality failed")
+        return []
+
+
+def assess_content_farm(signals: dict, reasons: list[str]) -> dict:
+    """
+    Final content-farm verdict reasoning over the heuristic signals + observations.
+    Returns {"content_farm_risk": LOW|MEDIUM|HIGH, "reasoning": str, "error": None}.
+    """
+    default = {"content_farm_risk": "UNKNOWN", "reasoning": "", "error": None}
+    try:
+        prompt_parts = [
+            "You are deciding whether a website is a CONTENT FARM (mass-produced low-value "
+            "trivia/SEO-bait) versus a genuine content or business site.",
+            "", "## Computed signals", json.dumps(signals, indent=2, default=str),
+            "", "## Observations", *(f"- {r}" for r in (reasons or ["(none)"])),
+            "", "## Task",
+            "The strongest tells: a high share of top-traffic pages that are trivia queries, "
+            "sampled homepage articles judged trivia/filler, and a homepage packed with many "
+            "internal article links. A real business or genuine expert blog is NOT a content farm.",
+            'Return ONLY JSON: {"content_farm_risk": "LOW|MEDIUM|HIGH", "reasoning": "2-3 sentences"}',
+        ]
+        system = "You are a meticulous SEO content-quality analyst. You always respond with valid JSON only."
+        raw = _backend.chat_json(system, "\n".join(prompt_parts), max_tokens=400)
+        parsed = _parse_json(raw)
+        risk = str(parsed.get("content_farm_risk", "UNKNOWN")).upper()
+        if risk not in ("LOW", "MEDIUM", "HIGH"):
+            risk = "UNKNOWN"
+        return {"content_farm_risk": risk, "reasoning": str(parsed.get("reasoning", "")), "error": None}
+    except Exception as exc:
+        logger.exception("assess_content_farm failed")
+        return {**default, "error": str(exc)}
+
+
 def assess_pbn(signals: dict, heuristic_reasons: list[str], homepage_text: str = "",
                ranking_sample: Optional[list[str]] = None) -> dict:
     """

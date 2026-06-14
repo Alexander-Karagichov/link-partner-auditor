@@ -13,13 +13,14 @@
 # NOTE: This list is SEPARATE from semrush_porn_gambling_keywords.txt (which feeds the
 #       SEMrush ranking checks). Edit each for its own purpose.
 # ============================================================
+
+# ── GAMBLING ─────────────────────────────────────────────────────────────────
 casino
-gambling
-porn
-sex
-xxx
-betting
-slots
-escort
-blackjack
+gamble
 poker
+lottery
+
+# ── ADULT / PORNOGRAPHY ───────────────────────────────────────────────────────
+porn
+xxx
+sex

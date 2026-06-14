@@ -237,6 +237,22 @@ For each *strange* domain (up to `RECIPROCAL_MAX_CHECKS`, default 10), the engin
 
 The audited site (and any reciprocating partner pages) is scanned for standard legitimacy signals: contact email, phone number, physical address, schema.org `Organization` / `LocalBusiness` markup, and the presence of `/contact` or `/about` pages. Missing several of these signals contributes to a higher risk score.
 
+### Content-farm spam score
+
+Runs after the homepage is scraped; skipped entirely if the domain already hard-failed the gambling/porn gate.
+
+**Cheap first — LLM article sampling.** The engine samples up to `CONTENT_FARM_SAMPLE_ARTICLES` (default 8) homepage-linked internal articles. An LLM judges each one as low-value trivia / SEO-bait. An article also counts as trash if it is under `CONTENT_FARM_THIN_WORDS` (default 250) words.
+
+**Escalates to a paid SEMrush pull only if suspicious.** A SEMrush top-pages pull is triggered when any of the following are true:
+
+- The trash share of sampled articles exceeds `CONTENT_FARM_ESCALATE_TRASH_SHARE` (default 0.4, i.e. 40 %)
+- The homepage links to more than `CONTENT_FARM_ARTICLE_LINK_COUNT` (default 30) internal articles
+- The domain's organic keyword footprint exceeds `CONTENT_FARM_KEYWORD_FOOTPRINT` (default 5 000 keywords)
+
+The SEMrush pull fetches the top `CONTENT_FARM_TOP_PAGES` (default 10) pages by traffic for the single #1 market (~10 API units/row). An LLM then rates how many of those pages target trivia / low-intent queries. Clean sites spend **0 SEMrush units** on this check.
+
+**Output.** A 0–100 content-farm score is produced, banded as **LOW / MEDIUM / HIGH** and shown as its own result banner. A HIGH verdict nudges the overall domain risk upward. Set `ENABLE_CONTENT_FARM=false` to skip the check entirely.
+
 ---
 
 ## 📦 Dependencies

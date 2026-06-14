@@ -237,6 +237,9 @@ class AuditResult:
     reciprocal_links: list[dict] = field(default_factory=list)    # [{partner, links_back, partner_legit}]
     business_legitimacy: dict = field(default_factory=dict)       # {is_legit, score, signals}
 
+    # ── Content-farm spam score ───────────────────────────────────────────────
+    content_farm: dict = field(default_factory=dict)   # {score, band, content_farm_risk, reasoning, ...}
+
     # ── AI Analysis (OpenAI) ──────────────────────────────────────────────────
     ai_analysis: dict = field(default_factory=dict)
     ai_analysis_error: Optional[str] = None
@@ -300,6 +303,9 @@ class AuditResult:
                 1 for r in self.reciprocal_links if r.get("links_back")
             ),
             "business_legitimacy": self.business_legitimacy,
+            "content_farm": self.content_farm,
+            "content_farm_band": self.content_farm.get("band"),
+            "content_farm_score": self.content_farm.get("score"),
             # AI analysis
             "risk_level": self.risk_level,
             "ai_analysis_summary": self.ai_analysis.get("summary", ""),
@@ -529,6 +535,89 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
 
         with ThreadPoolExecutor(max_workers=min(settings.INNER_CONCURRENCY, len(targets))) as pool:
             result.reciprocal_links = list(pool.map(_check_partner, targets))
+
+    # ── Content-farm spam score (cheap homepage check; SEMrush only if suspicious) ─
+    if settings.ENABLE_CONTENT_FARM and not result.early_failed and html:
+        from services import content_farm_service as cfarm
+
+        article_links = link_checker.extract_internal_article_links(html, full_url)
+        article_link_count = len(article_links)
+        sampled = article_links[: settings.CONTENT_FARM_SAMPLE_ARTICLES]
+
+        def _fetch_article(url: str) -> Optional[dict]:
+            try:
+                a_html, a_err = bdata.scrape_page(url)
+                if a_err or not a_html:
+                    return None
+                text = link_checker.extract_page_text(a_html)
+                title = ""
+                for ln in text.splitlines():
+                    if ln.startswith("Title:"):
+                        title = ln[len("Title:"):].strip()
+                        break
+                return {"url": url, "title": title, "snippet": text[:600],
+                        "word_count": len(text.split())}
+            except Exception as exc:
+                logger.warning("[%s] content-farm article fetch failed %s: %s", domain, url, exc)
+                return None
+
+        fetched: list[dict] = []
+        if sampled:
+            with ThreadPoolExecutor(max_workers=min(settings.INNER_CONCURRENCY, len(sampled))) as pool:
+                fetched = [a for a in pool.map(_fetch_article, sampled) if a]
+
+        judged = ai_service.classify_article_quality(
+            [{"url": a["url"], "title": a["title"], "snippet": a["snippet"]} for a in fetched]
+        )
+        _trivia_by_url = {j["url"]: j["is_trivia"] for j in judged}
+        check2 = cfarm.evaluate_articles(
+            [{"url": a["url"], "is_trivia": _trivia_by_url.get(a["url"], False),
+              "word_count": a["word_count"]} for a in fetched],
+            settings.CONTENT_FARM_THIN_WORDS,
+        )
+
+        keyword_footprint = overview.organic_keywords or 0
+        escalate = cfarm.should_escalate(
+            check2["trash_share"], article_link_count, keyword_footprint,
+            trash_threshold=settings.CONTENT_FARM_ESCALATE_TRASH_SHARE,
+            link_threshold=settings.CONTENT_FARM_ARTICLE_LINK_COUNT,
+            footprint_threshold=settings.CONTENT_FARM_KEYWORD_FOOTPRINT,
+        )
+
+        trivia_share = None
+        if escalate:
+            _top_market = (getattr(overview, "top_databases", None) or ["us"])[0]
+            logger.info("[%s] Content-farm: escalating to SEMrush (market=%s)…", domain, _top_market)
+            pages = semrush.get_top_traffic_pages(domain, _top_market, settings.CONTENT_FARM_TOP_PAGES)
+            if pages:
+                trivia_share = ai_service.classify_trivia_phrases([p.phrase for p in pages]).get("trivia_share")
+
+        _semrush_checked = bool(escalate and trivia_share is not None)
+        cf = cfarm.compute_signals(
+            trivia_share=trivia_share, trash_share=check2["trash_share"],
+            judged_articles=check2["judged"], article_link_count=article_link_count,
+            keyword_footprint=keyword_footprint, semrush_checked=_semrush_checked,
+        )
+        _verdict = ai_service.assess_content_farm(cf["signals"], cf["reasons"])
+        _cf_risk = _verdict.get("content_farm_risk") or cf["band"]
+        if _cf_risk == "UNKNOWN":
+            _cf_risk = cf["band"]
+        _floor = {"LOW": 10, "MEDIUM": 30, "HIGH": 60}.get(_cf_risk, 0)
+        result.content_farm = {
+            "content_farm_risk": _cf_risk,
+            "score": max(cf["score"], _floor),
+            "band": cf["band"],
+            "reasoning": _verdict.get("reasoning", ""),
+            "reasons": cf["reasons"],
+            "trivia_share": trivia_share,
+            "trash_share": check2["trash_share"],
+            "trash_examples": check2["trash_examples"],
+            "article_link_count": article_link_count,
+            "semrush_checked": _semrush_checked,
+            "signals": cf["signals"],
+        }
+        logger.info("[%s] Content-farm: %s (score %s, semrush_checked=%s)",
+                    domain, _cf_risk, result.content_farm["score"], _semrush_checked)
 
     # ── SERP results (Bright Data Google site: checks) ────────────────────────
     result.serp_porn_gambling_results = serp_results
@@ -766,6 +855,13 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
                         "[%s] OVERRIDE → LOW: only %d page(s) and %d total bad links.",
                         domain, _deep_pages_with_bad_links, _total_bad_link_count,
                     )
+
+    # A clear content-farm verdict shouldn't let a domain read as fully clean.
+    # Applied AFTER the rule-based overrides above so the NO_RISK rule (which fires
+    # when there are no P/G signals — the typical content-farm case) can't mask it.
+    if (result.content_farm or {}).get("content_farm_risk") == "HIGH" and \
+            result.risk_level in (None, "UNKNOWN", "NO_RISK", "CLEAN", "LOW"):
+        result.risk_level = "MEDIUM"
 
     # ── 8: Link building recommendation ──────────────────────────────────────
     lb_targets = linkbuilding_targets if linkbuilding_targets is not None else get_linkbuilding_targets()
