@@ -129,6 +129,15 @@ def _homepage_gambling_gate(domain: str, html: str) -> tuple[bool, list[dict], O
     if offending:
         return True, offending, "Homepage links to a known gambling/adult site.", {}, []
 
+    # 1b. Gambling/adult keyword anchor → non-allowlisted external link (free).
+    _kw_links = link_checker.gambling_keyword_external_links(
+        html, get_porn_gambling_keywords(), domain, oc._load_legit_domains()
+    )
+    if _kw_links:
+        for _h in _kw_links:
+            offending.append({"found_href": _h, "matched_bad_domain": "[gambling-keyword anchor]", "link_text": ""})
+        return True, offending, "Homepage links to a gambling/adult site (keyword anchor).", {}, []
+
     # 2. AI classify non-allowlisted candidates (computed once, reused by caller).
     buckets = oc.classify_outbound(html, f"https://{domain}")
     candidates = buckets.get("candidates", [])
@@ -240,6 +249,10 @@ class AuditResult:
     # ── Content-farm spam score ───────────────────────────────────────────────
     content_farm: dict = field(default_factory=dict)   # {score, band, content_farm_risk, reasoning, ...}
 
+    # ── Headline recommendation (Skip / Check manually / Approved) ─────────────
+    recommendation: dict = field(default_factory=dict)   # {decision, reason, flags, steps}
+    niche: str = ""   # 3-6 word niche/topic, determined right after the homepage gate passes
+
     # ── AI Analysis (OpenAI) ──────────────────────────────────────────────────
     ai_analysis: dict = field(default_factory=dict)
     ai_analysis_error: Optional[str] = None
@@ -306,6 +319,10 @@ class AuditResult:
             "content_farm": self.content_farm,
             "content_farm_band": self.content_farm.get("band"),
             "content_farm_score": self.content_farm.get("score"),
+            "recommendation": self.recommendation,
+            "recommendation_decision": self.recommendation.get("decision"),
+            "recommendation_reason": self.recommendation.get("reason"),
+            "niche": self.niche,
             # AI analysis
             "risk_level": self.risk_level,
             "ai_analysis_summary": self.ai_analysis.get("summary", ""),
@@ -372,6 +389,8 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
 
     core_kws = get_core_keywords()[: settings.MAX_KEYWORDS_CHECK]
     porn_kws = get_porn_gambling_keywords()  # no limit – check full list
+    from services import outbound_classifier as _oc
+    oc_legit = _oc._load_legit_domains()
 
     # ── GATE (first, serial): scrape homepage, hard-fail on gambling/porn links ─
     logger.info("[%s] Gate: scraping homepage and checking for gambling/porn links…", domain)
@@ -382,13 +401,20 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
     if html:
         failed, offending, reason, _gate_buckets, _gate_verdicts = _homepage_gambling_gate(domain, html)
         if failed:
+            from services import recommendation_service as rec
             result.homepage_scraped = True
             result.bad_links_found = offending
             result.early_failed = True
             result.early_fail_reason = reason
-            result.risk_level = "BAD"
-            result.ai_analysis = {"summary": reason, "risk_level": "BAD"}
-            logger.warning("[%s] HARD FAIL at homepage gate: %s", domain, reason)
+            result.recommendation = {
+                "decision": "SKIP",
+                "reason": "Failed homepage check",
+                "flags": [],
+                "steps": {"homepage_gate": {"status": "FAIL", "detail": reason}},
+            }
+            result.risk_level = rec.derive_risk_level("SKIP")
+            result.ai_analysis = {"summary": reason, "risk_level": "HIGH"}
+            logger.warning("[%s] SKIP at homepage gate: %s", domain, reason)
             return result
 
     # ── Wave 1: fire the remaining independent network calls concurrently ──────
@@ -490,6 +516,167 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
                     logger.info("[%s] About page scraped from %s (%d chars)", domain, about_url, len(_about_text))
         if not result.about_page_text:
             logger.info("[%s] No about page found — relying on homepage text for niche.", domain)
+
+    # ── Decision: data sufficiency ────────────────────────────────────────────
+    if not html:
+        from services import recommendation_service as rec
+        result.recommendation = {
+            "decision": "CHECK_MANUALLY",
+            "reason": "Couldn't fetch homepage",
+            "flags": [],
+            "steps": {"homepage_gate": {"status": "FAIL", "detail": result.scrape_error or "no HTML"}},
+        }
+        result.risk_level = rec.derive_risk_level("CHECK_MANUALLY")
+        logger.info("[%s] Recommendation: CHECK_MANUALLY (no homepage).", domain)
+        return result
+
+    # ── Niche (informational; determined once the homepage gate passed) ────────
+    if result.homepage_text:
+        result.niche = ai_service.determine_niche(result.homepage_text, result.about_page_text or "")
+        logger.info("[%s] Niche: %s", domain, result.niche or "(unknown)")
+
+    # ── SERP results (Bright Data Google site: checks) ────────────────────────
+    result.serp_porn_gambling_results = serp_results
+    result.serp_porn_gambling_error = serp_err
+    result.serp_core_results = serp_core_results
+    result.serp_core_error = serp_core_err
+
+    # ── 6b: Deep page link check ──────────────────────────────────────────────
+    # Sources:
+    #  (a) first 10 unique pages that rank for porn/gambling keywords (SEMrush)
+    #  (b) first 5 results per SERP term (already fetched that way)
+    # Both sources are merged with deduplication, no hard total cap.
+    _semrush_pages = list(dict.fromkeys(
+        hit["url"] for hit in result.porn_gambling_keyword_hits
+        if hit.get("url") and hit["url"].startswith("http")
+    ))[:10]
+
+    # Keep up to 5 per SERP term (they arrive grouped by matched_term already)
+    _serp_per_term: dict[str, list[str]] = {}
+    for r in result.serp_porn_gambling_results:
+        url = r.get("url", "")
+        term = r.get("matched_term", "")
+        if url and url.startswith("http"):
+            _serp_per_term.setdefault(term, [])
+            if len(_serp_per_term[term]) < 5:
+                _serp_per_term[term].append(url)
+    _serp_pages = [url for urls in _serp_per_term.values() for url in urls]
+
+    # Merge: SEMrush pages first, then SERP pages — deduplicate, preserve order
+    pg_ranking_urls = list(dict.fromkeys(_semrush_pages + _serp_pages))
+
+    # Cap to bound runtime on spam-heavy domains (each page is a scrape + AI call).
+    if len(pg_ranking_urls) > settings.MAX_DEEP_PAGES_PER_DOMAIN:
+        logger.info(
+            "[%s] Capping deep-check pages %d → %d (MAX_DEEP_PAGES_PER_DOMAIN).",
+            domain, len(pg_ranking_urls), settings.MAX_DEEP_PAGES_PER_DOMAIN,
+        )
+        pg_ranking_urls = pg_ranking_urls[: settings.MAX_DEEP_PAGES_PER_DOMAIN]
+
+    def _deep_check_page(page_url: str) -> dict:
+        # Work out what flagged this page (SEMrush keyword or SERP term)
+        _trigger = next(
+            (h["keyword"] for h in result.porn_gambling_keyword_hits if h.get("url") == page_url),
+            next(
+                (r.get("matched_term", "") for r in result.serp_porn_gambling_results if r.get("url") == page_url),
+                "serp discovery",
+            ),
+        )
+        check_entry: dict = {
+            "page_url": page_url,
+            "triggering_keyword": _trigger,
+            "total_links": 0,
+            "bad_links": [],
+            "keyword_flags": [],
+            "competitor_links": [],
+            "ai_flagged_links": [],
+            "error": None,
+        }
+        try:
+            page_html, page_err = bdata.scrape_page(page_url)
+            if page_err:
+                check_entry["error"] = page_err
+            elif page_html:
+                page_link_result = link_checker.check_links(page_html, page_url)
+                check_entry["total_links"] = page_link_result.total_links_found
+                check_entry["bad_links"] = [
+                    {
+                        "found_href": m.found_href,
+                        "matched_bad_domain": m.matched_bad_domain,
+                        "link_text": m.link_text,
+                    }
+                    for m in page_link_result.bad_link_matches
+                ]
+                # External-only keyword flags (skip internal links)
+                check_entry["keyword_flags"] = link_checker.keyword_links_present(
+                    page_html, porn_kws[:30], source_domain=domain
+                )
+                check_entry["gambling_keyword_links"] = link_checker.gambling_keyword_external_links(
+                    page_html, porn_kws, domain, oc_legit
+                )
+                # Competitor link check on this deep page
+                check_entry["competitor_links"] = link_checker.check_competitor_links(page_html, page_url)
+
+                # AI-powered outbound link classification:
+                # Extract body-only external links (excluding nav/footer) and ask the
+                # LLM to classify any gambling/adult destinations — this catches sites
+                # like splashcoins.com even when not in the known-bad list.
+                body_external_links = link_checker.extract_body_external_links(page_html, page_url)
+                if body_external_links:
+                    logger.info(
+                        "[%s] AI-classifying %d body external link(s) on %s…",
+                        domain, len(body_external_links), page_url,
+                    )
+                    ai_flagged = ai_service.classify_outbound_links(page_url, body_external_links)
+                    check_entry["ai_flagged_links"] = ai_flagged
+                    # Merge AI-flagged links into bad_links so they surface in the UI
+                    existing_hrefs = {b["found_href"] for b in check_entry["bad_links"]}
+                    for flagged in ai_flagged:
+                        href = flagged.get("found_href", "")
+                        if href and href not in existing_hrefs:
+                            check_entry["bad_links"].append({
+                                "found_href": href,
+                                "matched_bad_domain": f"[AI: {flagged.get('category', 'harmful')}]",
+                                "link_text": flagged.get("reason", ""),
+                            })
+                            existing_hrefs.add(href)
+        except Exception as exc:
+            check_entry["error"] = str(exc)
+        return check_entry
+
+    if pg_ranking_urls:
+        logger.info("[%s] Deep-checking %d porn/gambling ranking page(s)…", domain, len(pg_ranking_urls))
+        # Pages are independent — scrape + classify them concurrently (gently).
+        with ThreadPoolExecutor(max_workers=min(settings.INNER_CONCURRENCY, len(pg_ranking_urls))) as pool:
+            entries = list(pool.map(_deep_check_page, pg_ranking_urls))
+        for entry in entries:
+            result.competitor_links_found.extend(entry.get("competitor_links", []))
+            result.deep_page_checks.append(entry)
+    else:
+        logger.info("[%s] No porn/gambling ranking pages to deep-check.", domain)
+
+    # ── Decision: porn/gamble outbound links → SKIP ───────────────────────────
+    from services import recommendation_service as rec
+    _bad_hrefs = [b.get("found_href", "") for b in result.bad_links_found]
+    for _c in result.deep_page_checks:
+        _bad_hrefs += [b.get("found_href", "") for b in _c.get("bad_links", [])]
+    _kw_hrefs = link_checker.gambling_keyword_external_links(html, porn_kws, domain, oc_legit)
+    for _c in result.deep_page_checks:
+        _kw_hrefs += _c.get("gambling_keyword_links", [])
+    _pg_hits = rec.porn_gamble_hits(bad_link_hrefs=_bad_hrefs, gambling_keyword_hrefs=_kw_hrefs)
+    if _pg_hits:
+        result.recommendation = {
+            "decision": "SKIP",
+            "reason": "Linking to porn/gamble websites",
+            "flags": [],
+            "steps": {
+                "homepage_gate": {"status": "PASS", "detail": ""},
+                "porn_gamble_links": {"status": "FAIL", "count": len(_pg_hits), "examples": _pg_hits[:5]},
+            },
+        }
+        result.risk_level = rec.derive_risk_level("SKIP")
+        logger.info("[%s] Recommendation: SKIP (%d porn/gamble link(s)).", domain, len(_pg_hits))
+        return result
 
     # ── Outbound classification → reciprocity → legitimacy (PBN link scheme) ──
     from services import legitimacy_service as legit
@@ -619,123 +806,6 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
         logger.info("[%s] Content-farm: %s (score %s, semrush_checked=%s)",
                     domain, _cf_risk, result.content_farm["score"], _semrush_checked)
 
-    # ── SERP results (Bright Data Google site: checks) ────────────────────────
-    result.serp_porn_gambling_results = serp_results
-    result.serp_porn_gambling_error = serp_err
-    result.serp_core_results = serp_core_results
-    result.serp_core_error = serp_core_err
-
-    # ── 6b: Deep page link check ──────────────────────────────────────────────
-    # Sources:
-    #  (a) first 10 unique pages that rank for porn/gambling keywords (SEMrush)
-    #  (b) first 5 results per SERP term (already fetched that way)
-    # Both sources are merged with deduplication, no hard total cap.
-    _semrush_pages = list(dict.fromkeys(
-        hit["url"] for hit in result.porn_gambling_keyword_hits
-        if hit.get("url") and hit["url"].startswith("http")
-    ))[:10]
-
-    # Keep up to 5 per SERP term (they arrive grouped by matched_term already)
-    _serp_per_term: dict[str, list[str]] = {}
-    for r in result.serp_porn_gambling_results:
-        url = r.get("url", "")
-        term = r.get("matched_term", "")
-        if url and url.startswith("http"):
-            _serp_per_term.setdefault(term, [])
-            if len(_serp_per_term[term]) < 5:
-                _serp_per_term[term].append(url)
-    _serp_pages = [url for urls in _serp_per_term.values() for url in urls]
-
-    # Merge: SEMrush pages first, then SERP pages — deduplicate, preserve order
-    pg_ranking_urls = list(dict.fromkeys(_semrush_pages + _serp_pages))
-
-    # Cap to bound runtime on spam-heavy domains (each page is a scrape + AI call).
-    if len(pg_ranking_urls) > settings.MAX_DEEP_PAGES_PER_DOMAIN:
-        logger.info(
-            "[%s] Capping deep-check pages %d → %d (MAX_DEEP_PAGES_PER_DOMAIN).",
-            domain, len(pg_ranking_urls), settings.MAX_DEEP_PAGES_PER_DOMAIN,
-        )
-        pg_ranking_urls = pg_ranking_urls[: settings.MAX_DEEP_PAGES_PER_DOMAIN]
-
-    def _deep_check_page(page_url: str) -> dict:
-        # Work out what flagged this page (SEMrush keyword or SERP term)
-        _trigger = next(
-            (h["keyword"] for h in result.porn_gambling_keyword_hits if h.get("url") == page_url),
-            next(
-                (r.get("matched_term", "") for r in result.serp_porn_gambling_results if r.get("url") == page_url),
-                "serp discovery",
-            ),
-        )
-        check_entry: dict = {
-            "page_url": page_url,
-            "triggering_keyword": _trigger,
-            "total_links": 0,
-            "bad_links": [],
-            "keyword_flags": [],
-            "competitor_links": [],
-            "ai_flagged_links": [],
-            "error": None,
-        }
-        try:
-            page_html, page_err = bdata.scrape_page(page_url)
-            if page_err:
-                check_entry["error"] = page_err
-            elif page_html:
-                page_link_result = link_checker.check_links(page_html, page_url)
-                check_entry["total_links"] = page_link_result.total_links_found
-                check_entry["bad_links"] = [
-                    {
-                        "found_href": m.found_href,
-                        "matched_bad_domain": m.matched_bad_domain,
-                        "link_text": m.link_text,
-                    }
-                    for m in page_link_result.bad_link_matches
-                ]
-                # External-only keyword flags (skip internal links)
-                check_entry["keyword_flags"] = link_checker.keyword_links_present(
-                    page_html, porn_kws[:30], source_domain=domain
-                )
-                # Competitor link check on this deep page
-                check_entry["competitor_links"] = link_checker.check_competitor_links(page_html, page_url)
-
-                # AI-powered outbound link classification:
-                # Extract body-only external links (excluding nav/footer) and ask the
-                # LLM to classify any gambling/adult destinations — this catches sites
-                # like splashcoins.com even when not in the known-bad list.
-                body_external_links = link_checker.extract_body_external_links(page_html, page_url)
-                if body_external_links:
-                    logger.info(
-                        "[%s] AI-classifying %d body external link(s) on %s…",
-                        domain, len(body_external_links), page_url,
-                    )
-                    ai_flagged = ai_service.classify_outbound_links(page_url, body_external_links)
-                    check_entry["ai_flagged_links"] = ai_flagged
-                    # Merge AI-flagged links into bad_links so they surface in the UI
-                    existing_hrefs = {b["found_href"] for b in check_entry["bad_links"]}
-                    for flagged in ai_flagged:
-                        href = flagged.get("found_href", "")
-                        if href and href not in existing_hrefs:
-                            check_entry["bad_links"].append({
-                                "found_href": href,
-                                "matched_bad_domain": f"[AI: {flagged.get('category', 'harmful')}]",
-                                "link_text": flagged.get("reason", ""),
-                            })
-                            existing_hrefs.add(href)
-        except Exception as exc:
-            check_entry["error"] = str(exc)
-        return check_entry
-
-    if pg_ranking_urls:
-        logger.info("[%s] Deep-checking %d porn/gambling ranking page(s)…", domain, len(pg_ranking_urls))
-        # Pages are independent — scrape + classify them concurrently (gently).
-        with ThreadPoolExecutor(max_workers=min(settings.INNER_CONCURRENCY, len(pg_ranking_urls))) as pool:
-            entries = list(pool.map(_deep_check_page, pg_ranking_urls))
-        for entry in entries:
-            result.competitor_links_found.extend(entry.get("competitor_links", []))
-            result.deep_page_checks.append(entry)
-    else:
-        logger.info("[%s] No porn/gambling ranking pages to deep-check.", domain)
-
     # ── 7: AI analysis + PBN verdict (the two LLM calls run in parallel) ───────
     _pbn_signals = pbn_service.compute_signals(
         referring_domains=result.referring_domains,
@@ -795,77 +865,42 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
         "domain_age": domain_age_info,
         "error": _pbn_verdict.get("error"),
     }
-    # ── 7b: Rule-based risk overrides ─────────────────────────────────────────────
-    #
-    # Rule 1 – CRITICAL (immediate): homepage links to bad/gambling/adult sites.
-    _homepage_bad_link_count = len(result.bad_links_found)
-    if _homepage_bad_link_count > 0:
-        result.risk_level = "CRITICAL"
-        logger.info(
-            "[%s] OVERRIDE → CRITICAL: homepage has %d bad outbound link(s).",
-            domain, _homepage_bad_link_count,
-        )
+    # ── Build the headline recommendation (Skip already handled by short-circuits) ─
+    _pbn_band = (result.pbn or {}).get("pbn_risk")
+    _pbn_score = (result.pbn or {}).get("pbn_score", 0)
+    _cf_band = (result.content_farm or {}).get("band")
+    _cf_score = (result.content_farm or {}).get("score", 0)
 
-    # Remaining rules only apply when homepage was not CRITICAL.
-    elif result.risk_level != "CRITICAL":
-        _has_pg_keywords = bool(result.porn_gambling_keyword_hits)
-
-        # "Confirmed" SERP result: the matched keyword appears in the URL path,
-        # meaning the page is plausibly about that topic. Google site: searches
-        # often return unrelated pages (e.g. site:x.com casino -> /recipes/);
-        # those are treated as noise and excluded from risk signals.
-        _confirmed_serp = [
-            r for r in result.serp_porn_gambling_results
-            if r.get("matched_term", "").lower() in (r.get("url", "") or "").lower()
-        ]
-        _has_confirmed_serp = bool(_confirmed_serp)
-
-        _total_bad_links = len(result.bad_links_found) + sum(
-            len(c.get("bad_links", [])) for c in result.deep_page_checks
-        )
-
-        # Rule 2 – NO_RISK: no P/G keyword hits, no confirmed SERP hits, no bad links.
-        if not _has_pg_keywords and not _has_confirmed_serp and _total_bad_links == 0:
-            result.risk_level = "NO_RISK"
-            logger.info(
-                "[%s] OVERRIDE → NO_RISK: no genuine P/G signals and no bad links.", domain
-            )
-
-        # Rule 3 – LOW: has signals but deep checks found no pages with bad links.
-        # Applies regardless of OpenAI score (AI can over-flag on noisy signals).
-        elif _has_pg_keywords or _has_confirmed_serp:
-            _deep_pages_with_bad_links = sum(
-                1 for c in result.deep_page_checks if c.get("bad_links")
-            )
-            if _deep_pages_with_bad_links == 0:
-                result.risk_level = "LOW"
-                logger.info(
-                    "[%s] OVERRIDE → LOW: P/G signals present but zero pages with bad links.",
-                    domain,
-                )
-            elif _deep_pages_with_bad_links < 3:
-                # 1-2 offending pages and fewer than 5 total bad links -- cap at LOW
-                # If there are many bad links even on one page, trust the higher rating.
-                _total_bad_link_count = sum(
-                    len(c.get("bad_links", [])) for c in result.deep_page_checks
-                )
-                if result.risk_level in ("HIGH", "MEDIUM") and _total_bad_link_count < 5:
-                    result.risk_level = "LOW"
-                    logger.info(
-                        "[%s] OVERRIDE → LOW: only %d page(s) and %d total bad links.",
-                        domain, _deep_pages_with_bad_links, _total_bad_link_count,
-                    )
-
-    # A clear content-farm verdict shouldn't let a domain read as fully clean.
-    # Applied AFTER the rule-based overrides above so the NO_RISK rule (which fires
-    # when there are no P/G signals — the typical content-farm case) can't mask it.
-    if (result.content_farm or {}).get("content_farm_risk") == "HIGH" and \
-            result.risk_level in (None, "UNKNOWN", "NO_RISK", "CLEAN", "LOW"):
-        result.risk_level = "MEDIUM"
+    _flags = rec.collect_flags(
+        competitor_links=result.competitor_links_found,
+        age_days=(domain_age_info or {}).get("age_days"),
+        organic_traffic=result.organic_traffic,
+        pbn_band=_pbn_band, content_farm_band=_cf_band,
+        young_days=settings.RECO_YOUNG_DOMAIN_DAYS, low_traffic=settings.RECO_LOW_TRAFFIC,
+    )
+    _decision, _reason = rec.decide_after_scores(
+        pbn_band=_pbn_band, pbn_score=_pbn_score,
+        content_farm_band=_cf_band, content_farm_score=_cf_score,
+    )
+    result.recommendation = {
+        "decision": _decision,
+        "reason": _reason,
+        "flags": _flags,
+        "steps": {
+            "homepage_gate": {"status": "PASS", "detail": ""},
+            "porn_gamble_links": {"status": "PASS", "count": 0, "examples": []},
+            "pbn": {"status": "FAIL" if _pbn_band == "HIGH" else "PASS", "band": _pbn_band, "score": _pbn_score},
+            "content_farm": {"status": "FAIL" if _cf_band == "HIGH" else "PASS",
+                             "band": _cf_band, "score": _cf_score,
+                             "semrush_checked": (result.content_farm or {}).get("semrush_checked", False)},
+        },
+    }
+    result.risk_level = rec.derive_risk_level(_decision)
+    logger.info("[%s] Recommendation: %s%s", domain, _decision, f" — {_reason}" if _reason else "")
 
     # ── 8: Link building recommendation ──────────────────────────────────────
     lb_targets = linkbuilding_targets if linkbuilding_targets is not None else get_linkbuilding_targets()
-    if lb_targets:
+    if lb_targets and result.recommendation.get("decision") == "APPROVED":
         logger.info("[%s] Generating link building recommendation…", domain)
         link_rec = ai_service.recommend_link_building(
             result.to_dict(), lb_targets, settings.LINKBUILDING_TARGET_DOMAIN,
@@ -874,6 +909,9 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
         )
         result.link_recommendation = link_rec
         result.link_recommendation_error = link_rec.get("error")
+    elif result.recommendation.get("decision") != "APPROVED":
+        logger.info("[%s] Skipping anchor — recommendation is %s, not APPROVED.",
+                    domain, result.recommendation.get("decision"))
     else:
         logger.info("[%s] No link-building targets configured – skipping recommendation.", domain)
 

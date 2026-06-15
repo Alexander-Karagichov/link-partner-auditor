@@ -474,6 +474,28 @@ def assess_content_farm(signals: dict, reasons: list[str]) -> dict:
         return {**default, "error": str(exc)}
 
 
+def determine_niche(homepage_text: str, about_text: str = "") -> str:
+    """Return a 3-6 word niche/topic/industry description of the site, or "" on empty/error."""
+    if not homepage_text:
+        return ""
+    try:
+        ctx = homepage_text[:2000]
+        if about_text:
+            ctx += "\n\nAbout page:\n" + about_text[:1000]
+        prompt_parts = [
+            "Identify the website's primary niche / topic / industry from the text below.",
+            "", "## Site text", ctx, "",
+            'Return ONLY JSON: {"niche": "<3-6 word description>"}',
+        ]
+        system = "You are an SEO analyst. You always respond with valid JSON only."
+        raw = _backend.chat_json(system, "\n".join(prompt_parts), max_tokens=60)
+        parsed = _parse_json(raw)
+        return str(parsed.get("niche", "")).strip()
+    except Exception:
+        logger.exception("determine_niche failed")
+        return ""
+
+
 def assess_pbn(signals: dict, heuristic_reasons: list[str], homepage_text: str = "",
                ranking_sample: Optional[list[str]] = None) -> dict:
     """

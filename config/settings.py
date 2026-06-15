@@ -89,6 +89,10 @@ CONTENT_FARM_ESCALATE_TRASH_SHARE: float = float(os.getenv("CONTENT_FARM_ESCALAT
 CONTENT_FARM_ARTICLE_LINK_COUNT: int = int(os.getenv("CONTENT_FARM_ARTICLE_LINK_COUNT", "30"))
 CONTENT_FARM_KEYWORD_FOOTPRINT: int = int(os.getenv("CONTENT_FARM_KEYWORD_FOOTPRINT", "5000"))
 
+# ── Partner recommendation ────────────────────────────────────────────────────
+RECO_YOUNG_DOMAIN_DAYS: int = int(os.getenv("RECO_YOUNG_DOMAIN_DAYS", "180"))   # "<6 months" flag
+RECO_LOW_TRAFFIC: int = int(os.getenv("RECO_LOW_TRAFFIC", "1000"))              # low-traffic flag
+
 # ── File Paths ────────────────────────────────────────────────────────────────
 KEYWORDS_DIR: Path = BASE_DIR / "keywords"
 DATA_DIR: Path = BASE_DIR / "data"

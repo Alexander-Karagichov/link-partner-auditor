@@ -264,6 +264,46 @@ def keyword_links_present(html: str, keywords: list[str], source_domain: str = "
 
     return flags
 
+
+def gambling_keyword_external_links(html: str, keywords: list[str], source_domain: str,
+                                    legit_domains: list[str]) -> list[str]:
+    """
+    Return hrefs of EXTERNAL links whose anchor text or href contains a
+    gambling/adult keyword, EXCLUDING internal links and links to allowlisted
+    (legit) domains. A gambling-keyword anchor pointing to an unrecognized
+    external site is a strong 'links to porn/gamble' signal even when the domain
+    name itself is opaque. Deduplicated.
+    """
+    if not html or not keywords:
+        return []
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        return []
+    norm_source = (source_domain or "").lower().removeprefix("www.")
+    legit = [g.lower().removeprefix("www.") for g in (legit_domains or [])]
+    patterns = [re.compile(re.escape(kw), re.IGNORECASE) for kw in keywords]
+    out: list[str] = []
+    seen: set[str] = set()
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"].strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        d = _extract_domain(href)
+        if not d:
+            continue
+        if norm_source and (d == norm_source or d.endswith("." + norm_source)):
+            continue  # internal
+        if any(d == g or d.endswith("." + g) for g in legit):
+            continue  # allowlisted legit destination
+        text = tag.get_text(strip=True)
+        if any(p.search(f"{href} {text}") for p in patterns):
+            if href not in seen:
+                seen.add(href)
+                out.append(href)
+    return out
+
+
 # ── Body-only external link extractor ─────────────────────────────────────────
 
 # Tags that are typically navigation or footer elements to exclude

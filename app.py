@@ -33,6 +33,7 @@ try:
     from config.settings import validate_config
     from audit.audit_engine import audit_bulk, AuditResult, reload_keywords
     from services.link_checker_service import reload_bad_domains
+    from services import recommendation_service as recsvc
     _imports_ok = True
 except Exception as _import_err:
     _imports_ok = False
@@ -137,9 +138,11 @@ def _results_to_df(results: list[AuditResult], show_anchor: bool = True) -> pd.D
     for r in results:
         row = {
             "Domain": r.domain,
+            "Recommendation": (r.recommendation.get("decision") if getattr(r, "recommendation", None) else ""),
             "Risk": r.risk_level,
-            "PBN Risk": r.pbn.get("pbn_risk", "") if r.pbn else "",
-            "Niche": r.ai_analysis.get("website_niche", "") if r.ai_analysis else "",
+            "PBN Risk": (r.pbn.get("pbn_risk") if r.pbn and r.pbn.get("pbn_risk") else "-"),
+            "Spam Score": (r.content_farm.get("band") if getattr(r, "content_farm", None) and r.content_farm.get("band") else "-"),
+            "Niche": (getattr(r, "niche", "") or (r.ai_analysis.get("website_niche", "") if r.ai_analysis else "")),
             "Authority Score": r.authority_score,
             "Organic Traffic": r.organic_traffic,
             "Ref. Domains": r.referring_domains,
@@ -152,7 +155,7 @@ def _results_to_df(results: list[AuditResult], show_anchor: bool = True) -> pd.D
             "Is a Competitor?": "Yes" if r.ai_analysis.get("competitor_risk") else "No",
         }
         if show_anchor:
-            row["Anchor Text"] = r.link_recommendation.get("best_keyword", "") if r.link_recommendation else ""
+            row["Anchor Text"] = (r.link_recommendation.get("best_keyword") if r.link_recommendation and r.link_recommendation.get("best_keyword") else "-")
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -321,6 +324,49 @@ def render_domain_detail(result: AuditResult) -> None:
 
     with st.expander(f"{emoji} **{result.domain}** — {risk}", expanded=False):
 
+        _reco = getattr(result, "recommendation", None) or {}
+        _decision = _reco.get("decision")
+        if _decision:
+            _r_emoji = {"SKIP": "🔴", "CHECK_MANUALLY": "🟠", "APPROVED": "🟢"}.get(_decision, "❓")
+            _r_label = {"SKIP": "SKIP", "CHECK_MANUALLY": "CHECK MANUALLY", "APPROVED": "APPROVED"}.get(_decision, _decision)
+            st.markdown(f"## {_r_emoji} {_r_label}" + (f" — {_reco.get('reason')}" if _reco.get("reason") else ""))
+            for _flag in (_reco.get("flags") or []):
+                st.caption(f"⚠️ {_flag}")
+            _steps = _reco.get("steps") or {}
+            _rows = recsvc.build_phase_rows(_steps, getattr(result, "niche", "") or "")
+            _ph_emoji = {"PASS": "🟢", "FAIL": "🔴", "SKIPPED": "➖", "INFO": "🏷️",
+                         "LOW": "🟢", "MEDIUM": "🟠", "HIGH": "🔴"}
+            st.markdown("**Phases**")
+            for _row in _rows:
+                if _row["status"] == "INFO":
+                    continue  # niche lives in the Audit Summary table, not the phase panel
+                _e = _ph_emoji.get(_row["status"], "•")
+                _d = f" — {_row['detail']}" if _row.get("detail") else ""
+                st.markdown(f"{_e} **{_row['name']}**: {_row['status']}{_d}")
+            if result.pbn:
+                with st.expander("Why — PBN score"):
+                    st.markdown(f"**{result.pbn.get('pbn_risk', 'UNKNOWN')}** · score {result.pbn.get('pbn_score', 0)}/100")
+                    for _rsn in (result.pbn.get("reasons") or []):
+                        st.markdown(f"- {_rsn}")
+                    _sig = result.pbn.get("signals") or {}
+                    if _sig:
+                        st.caption("Signals: " + ", ".join(f"{k}={v}" for k, v in _sig.items()))
+                    st.caption("Bands: LOW <20 · MEDIUM 20–44 · HIGH 45+")
+            cfarm = getattr(result, "content_farm", None) or {}
+            if cfarm:
+                with st.expander("Why — Spam / content-farm score"):
+                    st.markdown(f"**{cfarm.get('band', 'UNKNOWN')}** · score {cfarm.get('score', 0)}/100"
+                                + ("" if cfarm.get("semrush_checked") else " · SEMrush skipped"))
+                    for _rsn in (cfarm.get("reasons") or []):
+                        st.markdown(f"- {_rsn}")
+                    _sig = cfarm.get("signals") or {}
+                    if _sig:
+                        st.caption("Signals: " + ", ".join(f"{k}={v}" for k, v in _sig.items()))
+                    if cfarm.get("trash_examples"):
+                        st.caption("Sample trash: " + ", ".join(cfarm["trash_examples"][:3]))
+                    st.caption("Bands: LOW <25 · MEDIUM 25–54 · HIGH 55+")
+            st.divider()
+
         # ── AI Analysis banner ─────────────────────────────────────────────
         if result.ai_analysis.get("summary"):
             comp_risk = result.ai_analysis.get("competitor_risk")
@@ -330,9 +376,9 @@ def render_domain_detail(result: AuditResult) -> None:
                     st.markdown("**Is a Competitor: ⚠️ Yes**")
                 else:
                     st.markdown("**Is a Competitor: ✅ No**")
-                st.markdown(f"**Risk: {emoji} {risk}**")
-                if result.ai_analysis.get("website_niche"):
-                    st.caption(f"🏷️ {result.ai_analysis["website_niche"]}")
+                _niche = getattr(result, "niche", "") or result.ai_analysis.get("website_niche", "")
+                if _niche:
+                    st.caption(f"🏷️ {_niche}")
             with col_r:
                 st.markdown(
                     f"**AI Summary:** {result.ai_analysis.get('summary', 'N/A')}"
@@ -345,47 +391,6 @@ def render_domain_detail(result: AuditResult) -> None:
 
             if result.ai_analysis.get("recommendation"):
                 st.info(f"💡 **Recommendation:** {result.ai_analysis['recommendation']}")
-
-        # ── PBN / link-network banner ──────────────────────────────────────
-        if result.pbn and result.pbn.get("pbn_risk"):
-            _pbn_risk = result.pbn.get("pbn_risk", "UNKNOWN")
-            _pbn_emoji = {"LOW": "🟢", "MEDIUM": "🟠", "HIGH": "🔴"}.get(_pbn_risk, "❓")
-            st.markdown(
-                f"**{_pbn_emoji} PBN / Link-Network Risk: {_pbn_risk}**  "
-                f"(signal score {result.pbn.get('pbn_score', 0)}/100)"
-            )
-            if result.pbn.get("reasoning"):
-                st.caption(result.pbn["reasoning"])
-            for _rsn in (result.pbn.get("reasons") or []):
-                st.markdown(f"- {_rsn}")
-            _net = result.pbn.get("network") or {}
-            _age = (result.pbn.get("domain_age") or {}).get("age_days")
-            _meta = []
-            if _age is not None:
-                _meta.append(f"domain age {_age} days")
-            if _net.get("ip"):
-                _meta.append(f"IP {_net['ip']}")
-            if _net.get("nameservers"):
-                _meta.append("NS " + ", ".join(_net["nameservers"][:2]))
-            if _meta:
-                st.caption(" · ".join(_meta))
-
-        # ── Content-farm banner ────────────────────────────────────────────
-        cfarm = getattr(result, "content_farm", None) or {}
-        if cfarm.get("content_farm_risk"):
-            _cf_risk = cfarm.get("content_farm_risk", "UNKNOWN")
-            _cf_emoji = {"LOW": "🟢", "MEDIUM": "🟠", "HIGH": "🔴"}.get(_cf_risk, "❓")
-            st.markdown(
-                f"**{_cf_emoji} Content-Farm Risk: {_cf_risk}**  "
-                f"(score {cfarm.get('score', 0)}/100"
-                + ("" if cfarm.get("semrush_checked") else ", homepage-only — SEMrush skipped") + ")"
-            )
-            if cfarm.get("reasoning"):
-                st.caption(cfarm["reasoning"])
-            for _rsn in (cfarm.get("reasons") or []):
-                st.caption(f"• {_rsn}")
-            if cfarm.get("trash_examples"):
-                st.caption("Sample trash articles: " + ", ".join(cfarm["trash_examples"][:3]))
 
         st.divider()
 
@@ -427,6 +432,9 @@ def render_domain_detail(result: AuditResult) -> None:
             with col_a:
                 st.markdown(f"**Core Keyword Hits on SEMrush: {len(result.core_keyword_hits)}**")
                 if result.core_keyword_hits:
+                    # Mirrors the red banner in the Porn/Gambling column so the two
+                    # tables line up vertically.
+                    st.success("🎉 Domain ranks for core business keywords")
                     st.dataframe(
                         pd.DataFrame(result.core_keyword_hits),
                         use_container_width=True,

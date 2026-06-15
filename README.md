@@ -46,16 +46,17 @@ The auditor runs **7 checks in parallel** for every domain:
 | 🔗 Homepage link check | Bad outbound links using known-bad domain list + AI |
 | 🔎 Deep page audit | Top-10 flagged pages scraped and checked for bad links |
 | 🤖 AI classification | OpenAI classifies external links the list might miss |
-| 💡 AI risk summary | The LLM assigns a risk level + actionable recommendation |
+| 💡 AI summary | The LLM writes a plain-language summary of the findings |
+| ✅ Verdict | A short-circuiting decision tree yields **Skip / Check manually / Approved** |
 | 🕵️ PBN / link-network check | Flags private-blog-network / link-farm patterns: topic mismatch (homepage vs. rankings), backlinks-without-audience, link-network outbound, domain age, and shared hosting across the batch |
 
 **Output:**
 
-| Domain | Risk | Niche | Authority | Traffic | Bad Links | Anchor Suggestion |
-|---|---|---|---|---|---|---|
-| technology.org | 🚨 CRITICAL | Science & tech news | 68 | 93K | 56 | — |
-| negup.com | 🔵 LOW | Taxi directory | 28 | 4K | 0 | "web scraping API" |
-| droven.io | 🟢 NO_RISK | Food & lifestyle blog | 12 | 7K | 0 | "data pipeline" |
+| Domain | Recommendation | Spam Score | Niche | Authority | Traffic | Bad Links | Anchor |
+|---|---|---|---|---|---|---|---|
+| technology.org | 🔴 SKIP | – | Science & tech news | 68 | 93K | 56 | – |
+| negup.com | 🟢 APPROVED | LOW | Taxi directory | 28 | 4K | 0 | "web scraping API" |
+| droven.io | 🟠 CHECK MANUALLY | MEDIUM | Food & lifestyle blog | 12 | 7K | 0 | – |
 
 ---
 
@@ -207,21 +208,18 @@ keywords/                   ← Editable keyword lists
 data/                       ← Known bad sites + competitor list
 ```
 
-### Risk scoring rules (deterministic overrides applied after AI)
+### Final verdict
 
-| Signal | Risk assigned |
-|---|---|
-| Homepage links to bad/gambling/adult sites | 🚨 CRITICAL (immediate) |
-| No P/G keywords + no confirmed SERP hits + no bad links | 🟢 NO_RISK |
-| P/G signals present but zero pages with bad outbound links | 🔵 LOW |
-| 1–2 pages with bad links (< 5 total bad links) | 🔵 LOW |
-| 3+ pages with bad links | AI score kept (MEDIUM / HIGH / CRITICAL) |
+The old rule-based risk-level overrides (CRITICAL / NO_RISK / LOW …) have been **replaced**
+by the short-circuiting **Recommendation** engine (see below), which produces a single
+**Skip / Check manually / Approved** verdict. `risk_level` is kept only as a derived value
+(SKIP → HIGH, CHECK_MANUALLY → MEDIUM, APPROVED → LOW) so existing exports keep working.
 
 SERP results are **confirmed** only if the matched keyword appears in the URL path — unrelated Google false-positives (e.g. `site:domain.com casino` → `/recipes/`) are filtered out.
 
 ### Homepage gambling/adult hard-fail gate
 
-The audit scrapes the homepage **first**. If any outbound link resolves to a domain in `data/known_bad_sites.txt`, or the AI classifies the linked site as gambling/adult, the domain is immediately assigned risk **BAD** and all remaining checks are skipped. This saves API quota for clear-cut rejects.
+The audit scrapes the homepage **first**. If any outbound link resolves to a domain in `data/known_bad_sites.txt`, or the AI classifies the linked site as gambling/adult, the domain is immediately marked **Skip** (failed homepage check) and all remaining checks are skipped. This saves API quota for clear-cut rejects.
 
 ### Reciprocity check (PBN / link-scheme signal)
 
@@ -252,6 +250,52 @@ Runs after the homepage is scraped; skipped entirely if the domain already hard-
 The SEMrush pull fetches the top `CONTENT_FARM_TOP_PAGES` (default 10) pages by traffic for the single #1 market (~10 API units/row). An LLM then rates how many of those pages target trivia / low-intent queries. Clean sites spend **0 SEMrush units** on this check.
 
 **Output.** A 0–100 content-farm score is produced, banded as **LOW / MEDIUM / HIGH** and shown as its own result banner. A HIGH verdict nudges the overall domain risk upward. Set `ENABLE_CONTENT_FARM=false` to skip the check entirely.
+
+### Recommendation (Skip / Check manually / Approved)
+
+After all checks complete, the audit produces a single headline recommendation via a short-circuiting decision tree. It stops at the first failure, so clear rejects spend minimal API quota.
+
+**Decision tree (evaluated in order):**
+
+1. **Homepage gate** — was the homepage reachable?  If not → **Check manually** (couldn't fetch).
+2. **Data gate** — did SEO/keyword data come back?  If not → **Check manually** (couldn't fetch data).
+3. **Porn/gambling outbound links** — does the homepage link to a known-bad domain, an AI-classified adult/gambling site, or use a gambling-keyword anchor pointing to an unrecognised external site?  If yes → **Skip**.
+4. **PBN score HIGH** — PBN/link-farm score 70–100?  If yes → **Check manually** (reason includes the 0–100 score).
+5. **Content-farm score HIGH** — content-farm score 70–100?  If yes → **Check manually** (reason includes the score).
+6. Otherwise → **Approved**.
+
+**Outcomes:**
+
+| Decision | Meaning | Anchor/link suggestion generated? |
+|---|---|---|
+| **Skip** | Clear reject — failed homepage gate or links to porn/gambling | No |
+| **Check manually** | Ambiguous signal — couldn't fetch data, or PBN/content-farm came back HIGH | No |
+| **Approved** | Passed every gate | Yes |
+
+**Flags (shown, non-blocking — do not change the decision):**
+
+- Links to a competitor domain (`data/competitor_sites.txt`)
+- New domain (< `RECO_YOUNG_DOMAIN_DAYS` days, default 180) **and** low organic traffic (< `RECO_LOW_TRAFFIC` visits/mo, default 1 000)
+- PBN score **MEDIUM** (40–69)
+- Content-farm score **MEDIUM** (40–69)
+
+**What is always shown:** every step's gate result — homepage PASS/FAIL, porn/gambling links PASS/FAIL + count, PBN 0–100 + band, content-farm 0–100 + band.
+
+**Backward compatibility:** `risk_level` is derived from the decision: SKIP → HIGH, CHECK_MANUALLY → MEDIUM, APPROVED → LOW.
+
+### Detailed results panel
+
+The per-domain results view is broken into **five sequential phases**, each shown as its own collapsible panel:
+
+| Phase | What it shows |
+|---|---|
+| **Homepage gate** | Reachability pass/fail |
+| **Niche** | Site topic determined right after the homepage gate passes — visible even on SKIP results |
+| **P/G links** | Porn/gambling outbound-link verdict + count |
+| **PBN** | 0–100 score + band; expandable "Why" rubric listing the key signals and band thresholds |
+| **Spam / content-farm** | 0–100 score + band; same expandable "Why" rubric |
+
+Phases that were skipped because an earlier one failed are labelled with the reason (e.g. *"Skipped — failed P/G links check"*) rather than left blank.
 
 ---
 
