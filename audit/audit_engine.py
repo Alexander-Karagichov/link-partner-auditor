@@ -103,56 +103,24 @@ def reload_keywords() -> None:
     oc.reload_legit_domains()
 
 
-def _homepage_gambling_gate(domain: str, html: str) -> tuple[bool, list[dict], Optional[str], dict, list[dict]]:
+def _homepage_gambling_gate(domain: str, html: str) -> tuple[list[dict], dict, list[dict]]:
     """
-    Decide if the homepage links DIRECTLY to gambling/porn — an instant fail.
-    Returns (failed, offending_links, reason, buckets, verdicts).
-
-    `buckets` is the outbound_classifier.classify_outbound() result and `verdicts`
-    is the AI classify_link_partners() result — returned so the caller can reuse
-    them for the strange/legit split instead of re-running the AI classifier.
-    Two detectors: known_bad_sites.txt match (free) then, only if clean, the AI
-    classifier on non-allowlisted outbound domains.
+    Find homepage outbound links to gambling/porn: known_bad_sites.txt matches +
+    AI domain classification. Returns (offending, buckets, verdicts). The CALLER
+    counts distinct domains to decide Skip/Check-manually (no instant fail here).
     """
     from services import outbound_classifier as oc
-
     offending: list[dict] = []
-
-    # 1. Known-bad list match (free).
     link_result = link_checker.check_links(html, f"https://{domain}")
     for m in link_result.bad_link_matches:
-        offending.append({
-            "found_href": m.found_href,
-            "matched_bad_domain": m.matched_bad_domain,
-            "link_text": m.link_text,
-        })
-    if offending:
-        return True, offending, "Homepage links to a known gambling/adult site.", {}, []
-
-    # 1b. Gambling/adult keyword anchor → non-allowlisted external link (free).
-    _kw_links = link_checker.gambling_keyword_external_links(
-        html, get_porn_gambling_keywords(), domain, oc._load_legit_domains()
-    )
-    if _kw_links:
-        for _h in _kw_links:
-            offending.append({"found_href": _h, "matched_bad_domain": "[gambling-keyword anchor]", "link_text": ""})
-        return True, offending, "Homepage links to a gambling/adult site (keyword anchor).", {}, []
-
-    # 2. AI classify non-allowlisted candidates (computed once, reused by caller).
+        offending.append({"found_href": m.found_href, "matched_bad_domain": m.matched_bad_domain, "link_text": m.link_text})
     buckets = oc.classify_outbound(html, f"https://{domain}")
     candidates = buckets.get("candidates", [])
     verdicts = ai_service.classify_link_partners(f"https://{domain}", candidates) if candidates else []
     for v in verdicts:
         if v.get("category") == "gambling_porn":
-            offending.append({
-                "found_href": v["domain"],
-                "matched_bad_domain": f"[AI: {v.get('reason', 'gambling/adult')}]",
-                "link_text": "",
-            })
-    if offending:
-        return True, offending, "Homepage links to an AI-detected gambling/adult site.", buckets, verdicts
-
-    return False, [], None, buckets, verdicts
+            offending.append({"found_href": v["domain"], "matched_bad_domain": f"[AI: {v.get('reason', 'gambling/adult')}]", "link_text": ""})
+    return offending, buckets, verdicts
 
 
 # ── Keyword matching helpers ───────────────────────────────────────────────────
@@ -389,32 +357,35 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
 
     core_kws = get_core_keywords()[: settings.MAX_KEYWORDS_CHECK]
     porn_kws = get_porn_gambling_keywords()  # no limit – check full list
-    from services import outbound_classifier as _oc
-    oc_legit = _oc._load_legit_domains()
 
     # ── GATE (first, serial): scrape homepage, hard-fail on gambling/porn links ─
     logger.info("[%s] Gate: scraping homepage and checking for gambling/porn links…", domain)
     html, scrape_err = bdata.scrape_page(full_url)
     result.scrape_error = scrape_err
+    from services import recommendation_service as rec
     _gate_buckets: dict = {}
     _gate_verdicts: list[dict] = []
+    _gate_offending: list[dict] = []
     if html:
-        failed, offending, reason, _gate_buckets, _gate_verdicts = _homepage_gambling_gate(domain, html)
-        if failed:
-            from services import recommendation_service as rec
-            result.homepage_scraped = True
-            result.bad_links_found = offending
+        _gate_offending, _gate_buckets, _gate_verdicts = _homepage_gambling_gate(domain, html)
+        result.homepage_scraped = True
+        _hp_domains = rec.confirmed_pg_domains(_gate_offending, [])
+        if len(_hp_domains) >= settings.PORN_GAMBLE_SKIP_THRESHOLD:
+            result.bad_links_found = _gate_offending
             result.early_failed = True
-            result.early_fail_reason = reason
+            result.early_fail_reason = f"Linking to {len(_hp_domains)} porn/gamble sites"
             result.recommendation = {
                 "decision": "SKIP",
-                "reason": "Failed homepage check",
+                "reason": result.early_fail_reason,
                 "flags": [],
-                "steps": {"homepage_gate": {"status": "FAIL", "detail": reason}},
+                "steps": {
+                    "homepage_gate": {"status": "PASS", "detail": ""},
+                    "porn_gamble_links": {"status": "FAIL", "count": len(_hp_domains), "examples": _hp_domains[:5]},
+                },
             }
             result.risk_level = rec.derive_risk_level("SKIP")
-            result.ai_analysis = {"summary": reason, "risk_level": "HIGH"}
-            logger.warning("[%s] SKIP at homepage gate: %s", domain, reason)
+            result.ai_analysis = {"summary": result.early_fail_reason, "risk_level": "HIGH"}
+            logger.warning("[%s] SKIP — homepage links to %d porn/gamble site(s).", domain, len(_hp_domains))
             return result
 
     # ── Wave 1: fire the remaining independent network calls concurrently ──────
@@ -499,9 +470,13 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
             }
             for m in link_result.bad_link_matches
         ]
+        # Merge the gate's AI-detected homepage gambling/adult links (not in the known-bad list).
+        _existing = {b["found_href"] for b in result.bad_links_found}
+        for _o in _gate_offending:
+            if _o.get("found_href") and _o["found_href"] not in _existing:
+                result.bad_links_found.append(_o)
+                _existing.add(_o["found_href"])
         result.competitor_links_found = link_checker.check_competitor_links(html, full_url)
-        # Secondary: keyword signals in external links only
-        result.keyword_link_flags = link_checker.keyword_links_present(html, porn_kws[:30], source_domain=domain)
         # Outbound-domain profile for PBN scoring
         _outbound_profile = link_checker.external_domain_profile(html, full_url)
 
@@ -565,6 +540,13 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
     # Merge: SEMrush pages first, then SERP pages — deduplicate, preserve order
     pg_ranking_urls = list(dict.fromkeys(_semrush_pages + _serp_pages))
 
+    # Google treats subdomains as separate sites: only deep-check pages on the exact
+    # audited domain (china.xavor.com gambling content must not fail xavor.com).
+    _before = len(pg_ranking_urls)
+    pg_ranking_urls = [u for u in pg_ranking_urls if rec.same_site(u, domain)]
+    if len(pg_ranking_urls) != _before:
+        logger.info("[%s] Dropped %d subdomain page(s) from deep crawl.", domain, _before - len(pg_ranking_urls))
+
     # Cap to bound runtime on spam-heavy domains (each page is a scrape + AI call).
     if len(pg_ranking_urls) > settings.MAX_DEEP_PAGES_PER_DOMAIN:
         logger.info(
@@ -607,13 +589,6 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
                     }
                     for m in page_link_result.bad_link_matches
                 ]
-                # External-only keyword flags (skip internal links)
-                check_entry["keyword_flags"] = link_checker.keyword_links_present(
-                    page_html, porn_kws[:30], source_domain=domain
-                )
-                check_entry["gambling_keyword_links"] = link_checker.gambling_keyword_external_links(
-                    page_html, porn_kws, domain, oc_legit
-                )
                 # Competitor link check on this deep page
                 check_entry["competitor_links"] = link_checker.check_competitor_links(page_html, page_url)
 
@@ -655,27 +630,34 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
     else:
         logger.info("[%s] No porn/gambling ranking pages to deep-check.", domain)
 
-    # ── Decision: porn/gamble outbound links → SKIP ───────────────────────────
-    from services import recommendation_service as rec
-    _bad_hrefs = [b.get("found_href", "") for b in result.bad_links_found]
-    for _c in result.deep_page_checks:
-        _bad_hrefs += [b.get("found_href", "") for b in _c.get("bad_links", [])]
-    _kw_hrefs = link_checker.gambling_keyword_external_links(html, porn_kws, domain, oc_legit)
-    for _c in result.deep_page_checks:
-        _kw_hrefs += _c.get("gambling_keyword_links", [])
-    _pg_hits = rec.porn_gamble_hits(bad_link_hrefs=_bad_hrefs, gambling_keyword_hrefs=_kw_hrefs)
-    if _pg_hits:
+    # ── Decision: porn/gamble outbound links (distinct confirmed destination sites) ─
+    _pg_domains = rec.confirmed_pg_domains(result.bad_links_found, result.deep_page_checks)
+    _pg_decision, _pg_reason, _pg_flag = rec.decide_porn_gamble(_pg_domains, settings.PORN_GAMBLE_SKIP_THRESHOLD)
+    if _pg_decision == "SKIP":
+        # Verify it's a gambling promoter, not a neutral directory/news/B2B that links
+        # to gambling companies incidentally (e.g. clodura.ai's /directory/company/ pages).
+        _src_pages: list[str] = [c["page_url"] for c in result.deep_page_checks if c.get("bad_links")]
+        if result.bad_links_found:
+            _src_pages = [full_url] + _src_pages
+        _ctx = ai_service.classify_gambling_link_context(domain, getattr(result, "niche", "") or "", _src_pages, _pg_domains)
+        if _ctx == "incidental":
+            _pg_decision = "CHECK_MANUALLY"
+            _pg_reason = f"Links to {len(_pg_domains)} gambling sites (likely incidental — review)"
+            _pg_flag = f"Incidental gambling links ({len(_pg_domains)}): {', '.join(_pg_domains[:5])}"
+            logger.info("[%s] Gambling links judged INCIDENTAL — downgraded SKIP → manual.", domain)
+    if _pg_decision:
+        _pg_status = "FAIL" if _pg_decision == "SKIP" else "WARN"
         result.recommendation = {
-            "decision": "SKIP",
-            "reason": "Linking to porn/gamble websites",
-            "flags": [],
+            "decision": _pg_decision,
+            "reason": _pg_reason,
+            "flags": ([_pg_flag] if _pg_flag else []),
             "steps": {
                 "homepage_gate": {"status": "PASS", "detail": ""},
-                "porn_gamble_links": {"status": "FAIL", "count": len(_pg_hits), "examples": _pg_hits[:5]},
+                "porn_gamble_links": {"status": _pg_status, "count": len(_pg_domains), "examples": _pg_domains[:5]},
             },
         }
-        result.risk_level = rec.derive_risk_level("SKIP")
-        logger.info("[%s] Recommendation: SKIP (%d porn/gamble link(s)).", domain, len(_pg_hits))
+        result.risk_level = rec.derive_risk_level(_pg_decision)
+        logger.info("[%s] Recommendation: %s — %s.", domain, _pg_decision, _pg_reason)
         return result
 
     # ── Outbound classification → reciprocity → legitimacy (PBN link scheme) ──

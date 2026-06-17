@@ -124,6 +124,10 @@ BRIGHTDATA_SERP_ZONE=serp_api_marketing_make_com
 See [`.env.example`](.env.example) for the full list, including throughput
 tuning (`INNER_CONCURRENCY`, `MAX_DEEP_PAGES_PER_DOMAIN`, …).
 
+| Env var | Default | Purpose |
+|---|---|---|
+| `PORN_GAMBLE_SKIP_THRESHOLD` | `3` | Minimum number of distinct confirmed adult/gambling destination domains that triggers a **Skip**. 1–2 destinations yield **Check manually** instead. |
+
 ### Keyword / data files (fully editable)
 
 Each list feeds a different stage of the audit — and a different cost.
@@ -219,7 +223,9 @@ SERP results are **confirmed** only if the matched keyword appears in the URL pa
 
 ### Homepage gambling/adult hard-fail gate
 
-The audit scrapes the homepage **first**. If any outbound link resolves to a domain in `data/known_bad_sites.txt`, or the AI classifies the linked site as gambling/adult, the domain is immediately marked **Skip** (failed homepage check) and all remaining checks are skipped. This saves API quota for clear-cut rejects.
+The audit scrapes the homepage **first**. Outbound links are judged by the **destination domain's nature** — not by URL keywords or anchor text. A news, academic, medical, or online-safety site that merely *writes about* porn or gambling is not flagged; only domains that *operate* as adult/gambling services are counted. The engine resolves each link to its registrable domain, checks it against `data/known_bad_sites.txt`, and (for unknowns) asks the AI to classify it.
+
+**Fast-path:** if the homepage alone already links to `PORN_GAMBLE_SKIP_THRESHOLD` or more distinct confirmed bad domains (default **3**), the domain is immediately marked **Skip** and all remaining checks are skipped, saving API quota for clear-cut rejects.
 
 ### Reciprocity check (PBN / link-scheme signal)
 
@@ -239,7 +245,7 @@ The audited site (and any reciprocating partner pages) is scanned for standard l
 
 Runs after the homepage is scraped; skipped entirely if the domain already hard-failed the gambling/porn gate.
 
-**Cheap first — LLM article sampling.** The engine samples up to `CONTENT_FARM_SAMPLE_ARTICLES` (default 8) homepage-linked internal articles. An LLM judges each one as low-value trivia / SEO-bait. An article also counts as trash if it is under `CONTENT_FARM_THIN_WORDS` (default 250) words.
+**Cheap first — LLM article sampling.** The engine samples up to `CONTENT_FARM_SAMPLE_ARTICLES` (default 8) homepage-linked internal articles. An LLM judges each one as low-value trivia / SEO-bait. An article also counts as trash if it is under `CONTENT_FARM_THIN_WORDS` (default 250) words. Service pages, product pages, and landing pages are **not** treated as trivia — only genuine low-value informational articles qualify.
 
 **Escalates to a paid SEMrush pull only if suspicious.** A SEMrush top-pages pull is triggered when any of the following are true:
 
@@ -259,7 +265,7 @@ After all checks complete, the audit produces a single headline recommendation v
 
 1. **Homepage gate** — was the homepage reachable?  If not → **Check manually** (couldn't fetch).
 2. **Data gate** — did SEO/keyword data come back?  If not → **Check manually** (couldn't fetch data).
-3. **Porn/gambling outbound links** — does the homepage link to a known-bad domain, an AI-classified adult/gambling site, or use a gambling-keyword anchor pointing to an unrecognised external site?  If yes → **Skip**.
+3. **Porn/gambling outbound links** — across the homepage and audited pages, how many distinct confirmed adult/gambling destination domains are linked? Destinations are judged by **what the site is**, not by URL words or anchor text (eliminating false positives on topical citations and share buttons). **≥ `PORN_GAMBLE_SKIP_THRESHOLD` (default 3) distinct bad destinations → Skip**. **1–2 bad destinations → Check manually** (the flag lists them). **0 → continue**.
 4. **PBN score HIGH** — PBN/link-farm score 70–100?  If yes → **Check manually** (reason includes the 0–100 score).
 5. **Content-farm score HIGH** — content-farm score 70–100?  If yes → **Check manually** (reason includes the score).
 6. Otherwise → **Approved**.
@@ -271,6 +277,11 @@ After all checks complete, the audit produces a single headline recommendation v
 | **Skip** | Clear reject — failed homepage gate or links to porn/gambling | No |
 | **Check manually** | Ambiguous signal — couldn't fetch data, or PBN/content-farm came back HIGH | No |
 | **Approved** | Passed every gate | Yes |
+
+**Porn/gambling detection refinements:**
+
+- **Subdomains excluded from the deep crawl.** Only the registrable root domain is audited; subdomains (e.g. `china.xavor.com`) are skipped. Google treats subdomains as separate sites, so gambling content hosted on a subdomain does not fail the main domain.
+- **Promoter vs. incidental.** When a site would otherwise be flagged for linking to gambling sites, the AI distinguishes a genuine gambling **promoter / affiliate** (→ Skip) from a **neutral directory, news, or B2B site** that links to gambling companies incidentally — e.g. a business-directory whose company profiles happen to include casino or lottery operators (→ Check manually).
 
 **Flags (shown, non-blocking — do not change the decision):**
 

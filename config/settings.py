@@ -93,6 +93,10 @@ CONTENT_FARM_KEYWORD_FOOTPRINT: int = int(os.getenv("CONTENT_FARM_KEYWORD_FOOTPR
 RECO_YOUNG_DOMAIN_DAYS: int = int(os.getenv("RECO_YOUNG_DOMAIN_DAYS", "180"))   # "<6 months" flag
 RECO_LOW_TRAFFIC: int = int(os.getenv("RECO_LOW_TRAFFIC", "1000"))              # low-traffic flag
 
+# Distinct confirmed porn/gambling DESTINATION sites a partner may link to before
+# it is auto-skipped. Below this (but >0) → Check manually. Counts distinct domains.
+PORN_GAMBLE_SKIP_THRESHOLD: int = int(os.getenv("PORN_GAMBLE_SKIP_THRESHOLD", "3"))
+
 # ── File Paths ────────────────────────────────────────────────────────────────
 KEYWORDS_DIR: Path = BASE_DIR / "keywords"
 DATA_DIR: Path = BASE_DIR / "data"

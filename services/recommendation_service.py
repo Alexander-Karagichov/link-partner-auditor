@@ -10,6 +10,7 @@ all unit-testable without network.
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urlparse
 
 
 def porn_gamble_hits(*, bad_link_hrefs: list[str], gambling_keyword_hrefs: list[str]) -> list[str]:
@@ -80,6 +81,8 @@ def build_phase_rows(steps: dict, niche: str) -> list[dict]:
         skip_reason = "Skipped — didn't pass homepage check"
     elif pg and pg.get("status") == "FAIL":
         skip_reason = "Skipped — failed P/G links check"
+    elif pg and pg.get("status") == "WARN":
+        skip_reason = "Skipped — porn/gamble check sent to manual review"
     else:
         skip_reason = "Skipped — couldn't fetch data"
 
@@ -97,3 +100,48 @@ def build_phase_rows(steps: dict, niche: str) -> list[dict]:
         else:
             rows.append({"name": label, "status": "SKIPPED", "detail": skip_reason})
     return rows
+
+
+def same_site(url: str, audited_domain: str) -> bool:
+    """True iff url's host is the exact audited domain or its www. form (NOT other subdomains)."""
+    base = (audited_domain or "").lower().removeprefix("www.")
+    return bool(base) and _domain_of(url) == base
+
+
+def _domain_of(href: str) -> str:
+    href = (href or "").strip()
+    if not href:
+        return ""
+    parsed = urlparse(href if "//" in href else "//" + href)
+    return (parsed.netloc or "").lower().removeprefix("www.")
+
+
+def confirmed_pg_domains(homepage_bad_links: list, deep_page_checks: list) -> list[str]:
+    """Distinct registrable domains from known-bad + AI-flagged links (homepage + deep)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    def _add(href: str) -> None:
+        d = _domain_of(href)
+        if d and d not in seen:
+            seen.add(d)
+            out.append(d)
+    for b in (homepage_bad_links or []):
+        _add(b.get("found_href", ""))
+    for c in (deep_page_checks or []):
+        for b in c.get("bad_links", []):
+            _add(b.get("found_href", ""))
+    return out
+
+
+def decide_porn_gamble(pg_domains: list[str], threshold: int) -> tuple:
+    """
+    Return (decision, reason, flag). decision in 'SKIP' | 'CHECK_MANUALLY' | None.
+    >= threshold distinct domains -> SKIP; 1..threshold-1 -> CHECK_MANUALLY; 0 -> None.
+    """
+    n = len(pg_domains)
+    if n >= threshold:
+        return "SKIP", f"Linking to {n} porn/gamble sites", None
+    if n >= 1:
+        listed = ", ".join(pg_domains[:5])
+        return "CHECK_MANUALLY", f"Links to {n} porn/gamble site(s)", f"Links to {n} porn/gamble site(s): {listed}"
+    return None, "", None

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Optional
+from urllib.parse import urlparse
 
 from config import settings
 
@@ -31,6 +32,15 @@ if settings.LLM_PROVIDER == "anthropic":
     from services import anthropic_service as _backend
 else:
     from services import openai_service as _backend
+
+
+def _domain_of(href: str) -> str:
+    """Registrable host of an href or a bare domain string ('bodog.eu' or full URL)."""
+    href = (href or "").strip()
+    if not href:
+        return ""
+    parsed = urlparse(href if "//" in href else "//" + href)
+    return (parsed.netloc or "").lower().removeprefix("www.")
 
 
 # ── JSON helpers ────────────────────────────────────────────────────────────────
@@ -260,56 +270,55 @@ def recommend_link_building(
 
 def classify_outbound_links(page_url: str, external_links: list[str]) -> list[dict]:
     """
-    Ask the LLM to classify a list of external links from a page body as
-    gambling/adult or safe.
-
-    Returns a list of dicts {found_href, category, reason} for every link that
-    is classified as gambling or adult content. Only flagged links are returned.
+    Classify external links by the NATURE OF THEIR DESTINATION DOMAIN (not the
+    URL's topic). Returns {found_href, category, reason} for every link whose
+    DOMAIN is a gambling/adult operator. A site that merely writes ABOUT these
+    topics (news/academic/medical/security/safety) is NOT flagged.
     """
     if not external_links:
         return []
-
     default_response: list[dict] = []
-
     try:
-        links_block = "\n".join(f"- {href}" for href in external_links[:60])
-
+        url_domain = {href: _domain_of(href) for href in external_links}
+        domains = sorted({d for d in url_domain.values() if d})
+        if not domains:
+            return []
+        domains_block = "\n".join(f"- {d}" for d in domains[:60])
         prompt_parts = [
-            f"You are a brand-safety analyst reviewing outbound links found in the main body of this page: {page_url}",
+            f"You are a brand-safety analyst reviewing the OUTBOUND-LINK DESTINATIONS of this page: {page_url}",
             "",
-            "Below is a list of external URLs linked from the body of that page (navigation and footer links have already been excluded).",
+            "Below are the destination DOMAINS linked from the page body.",
             "",
-            "## Outbound links",
-            links_block,
+            "## Destination domains",
+            domains_block,
             "",
             "## Task",
-            "For EACH link, determine whether the destination domain is a gambling, social-casino, sports-betting, adult/porn, or escort website.",
-            "Only include links in your response that ARE gambling/adult (skip safe links).",
+            "For EACH domain, decide whether the SITE ITSELF is a gambling, social-casino, "
+            "sports-betting, adult/porn, or escort operator.",
+            "IMPORTANT: Judge the destination SITE, not the topic of any URL or article. A news, "
+            "academic, medical, security, government, or online-safety site that merely WRITES "
+            "ABOUT gambling or porn is NOT a gambling/adult site — do NOT flag it. Only flag a "
+            "domain that IS such an operator. When unsure, do NOT flag.",
             "",
-            "Return a JSON object with a single key `flagged_links` containing an array of objects, each with:",
-            "  - `found_href`: the exact URL from the list",
-            "  - `category`: one of: gambling, social_casino, sports_betting, adult, escort, other_harmful",
-            "  - `reason`: one sentence explaining why it is flagged",
-            "",
-            "If NO links are gambling/adult, return: {\"flagged_links\": []}",
-            "Return ONLY the JSON object, no markdown fences, no extra text.",
+            "Return a JSON object with a single key `flagged_domains`: an array of objects with "
+            "`domain`, `category` (gambling|social_casino|sports_betting|adult|escort|other_harmful), "
+            "and a one-sentence `reason`. If none, return {\"flagged_domains\": []}. "
+            "Return ONLY the JSON object.",
         ]
-
-        system = (
-            "You are a brand-safety content classifier. "
-            "You always respond with valid JSON only."
-        )
-        raw = _backend.chat_json(system, "\n".join(prompt_parts), max_tokens=800)
+        system = "You are a brand-safety content classifier. You always respond with valid JSON only."
+        raw = _backend.chat_json(system, "\n".join(prompt_parts), max_tokens=600)
         parsed = _parse_json(raw)
-        return parsed.get("flagged_links", [])
-
-    except json.JSONDecodeError as exc:
-        logger.warning("Failed to parse LLM JSON for outbound link classification: %s", exc)
-        return default_response
-    except ValueError as exc:
-        logger.warning("ValueError classifying outbound links: %s", exc)
-        return default_response
-    except Exception as exc:
+        flagged: dict[str, dict] = {}
+        for it in parsed.get("flagged_domains", []):
+            d = str(it.get("domain", "")).lower().removeprefix("www.")
+            if d:
+                flagged[d] = {"category": str(it.get("category", "gambling")), "reason": str(it.get("reason", ""))}
+        out: list[dict] = []
+        for href, d in url_domain.items():
+            if d in flagged:
+                out.append({"found_href": href, "category": flagged[d]["category"], "reason": flagged[d]["reason"]})
+        return out
+    except Exception:
         logger.exception("Unexpected error classifying outbound links")
         return default_response
 
@@ -343,6 +352,10 @@ def classify_link_partners(page_url: str, domains: list[str]) -> list[dict]:
             "  - `strange`: unrelated/odd site with no obvious reason to be linked "
             "(possible link-exchange partner)",
             "",
+            "IMPORTANT: judge the destination SITE itself, not the topic of any URL or anchor. "
+            "A news/academic/medical/security/online-safety site that merely writes ABOUT gambling "
+            "or porn is NOT 'gambling_porn' — classify it 'legit'. Only use 'gambling_porn' for a "
+            "domain that IS a gambling operator or an adult/porn site.",
             "Return a JSON object with a single key `results` containing an array of "
             "objects, each with `domain`, `category`, and a one-sentence `reason`.",
             "Return ONLY the JSON object, no markdown fences.",
@@ -365,6 +378,42 @@ def classify_link_partners(page_url: str, domains: list[str]) -> list[dict]:
     except Exception:
         logger.exception("classify_link_partners failed for %s", page_url)
         return []
+
+
+def classify_gambling_link_context(audited_domain: str, niche: str,
+                                   source_pages: list[str], gambling_domains: list[str]) -> str:
+    """
+    Decide whether a site that links to gambling domains is a PROMOTER (affiliate /
+    casino-review / gambling-content site) or an INCIDENTAL linker (neutral business
+    directory, news/media, B2B tool, or safety/educational site). Returns "promoter"
+    or "incidental"; defaults to "incidental" on error (so failures route to human
+    review, never a false auto-skip).
+    """
+    try:
+        pages_block = "\n".join(f"- {p}" for p in (source_pages or [])[:15]) or "(homepage)"
+        doms_block = ", ".join((gambling_domains or [])[:20])
+        prompt_parts = [
+            f"The website {audited_domain} (niche: {niche or 'unknown'}) links out to these "
+            f"gambling/casino/betting/lottery domains: {doms_block}.",
+            "Those links were found on these pages of the site:",
+            pages_block,
+            "",
+            "## Task",
+            "Decide whether this site is a GAMBLING PROMOTER — a casino/betting affiliate, a "
+            "gambling-review site, or a gambling-content site that exists to push gambling — OR "
+            "an INCIDENTAL linker: a neutral business directory / company database (company "
+            "profiles that happen to include casinos or lotteries), a news/media outlet, a B2B "
+            "tool, or a safety/educational site that links to gambling companies incidentally.",
+            "Government lotteries and casino COMPANIES profiled in a business directory are INCIDENTAL.",
+            'Return ONLY JSON: {"context": "promoter"} or {"context": "incidental"}.',
+        ]
+        system = "You are a brand-safety analyst. You always respond with valid JSON only."
+        raw = _backend.chat_json(system, "\n".join(prompt_parts), max_tokens=80)
+        parsed = _parse_json(raw)
+        return "promoter" if str(parsed.get("context", "")).strip().lower() == "promoter" else "incidental"
+    except Exception:
+        logger.exception("classify_gambling_link_context failed")
+        return "incidental"
 
 
 def classify_trivia_phrases(phrases: list[str]) -> dict:
@@ -423,6 +472,10 @@ def classify_article_quality(articles: list[dict]) -> list[dict]:
             "Low-value = generic trivia/SEO-bait (e.g. 'How Many Seconds in a Day'), thin or "
             "templated filler with no real expertise. High-value = genuine, useful, expert content.",
             "", "## Articles", "\n".join(lines), "",
+            "A legitimate business's service / product / solution / landing / pricing / about / "
+            "contact pages are NOT content-farm filler — do NOT mark them is_trivia. Only flag "
+            "genuine low-value INFORMATIONAL trivia/SEO-bait articles (how-to listicles, 'what is "
+            "X' definitions, unit conversions, generic filler with no expertise or commercial purpose).",
             'Return ONLY JSON with key "results": an array of '
             '{"index": <int>, "is_trivia": <bool>, "reason": "short"} for EVERY article.',
         ]

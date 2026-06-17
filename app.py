@@ -335,6 +335,7 @@ def render_domain_detail(result: AuditResult) -> None:
             _steps = _reco.get("steps") or {}
             _rows = recsvc.build_phase_rows(_steps, getattr(result, "niche", "") or "")
             _ph_emoji = {"PASS": "🟢", "FAIL": "🔴", "SKIPPED": "➖", "INFO": "🏷️",
+                         "WARN": "🟠",
                          "LOW": "🟢", "MEDIUM": "🟠", "HIGH": "🔴"}
             st.markdown("**Phases**")
             for _row in _rows:
@@ -466,15 +467,9 @@ def render_domain_detail(result: AuditResult) -> None:
                 for bl in c.get("bad_links", []):
                     all_bad_links_dp.append(dict(bl, source_page=c["page_url"]))
 
-            all_kw_flags_hp = list(result.keyword_link_flags)
-            all_kw_flags_dp: list[str] = []
-            for c in result.deep_page_checks:
-                all_kw_flags_dp.extend(c.get("keyword_flags", []))
-
             # ── P/G Links ─────────────────────────────────────────────────
             st.subheader("P/G Links")
-            total_pg_issues = (len(all_bad_links_hp) + len(all_bad_links_dp) +
-                               len(all_kw_flags_hp) + len(all_kw_flags_dp))
+            total_pg_issues = len(all_bad_links_hp) + len(all_bad_links_dp)
             if total_pg_issues:
                 st.error(f"🚨 {total_pg_issues} P/G link issue(s) found across the site.")
             else:
@@ -484,7 +479,7 @@ def render_domain_detail(result: AuditResult) -> None:
             hp_known = [b for b in all_bad_links_hp if not b.get("matched_bad_domain", "").startswith("[AI:")]
             hp_ai = [b for b in all_bad_links_hp if b.get("matched_bad_domain", "").startswith("[AI:")]
             with st.expander(
-                f"🏠 Homepage — {'⚠️ issues found' if (hp_known or hp_ai or all_kw_flags_hp) else '✅ clean'}",
+                f"🏠 Homepage — {'⚠️ issues found' if (hp_known or hp_ai) else '✅ clean'}",
                 expanded=False,
             ):
                 st.caption(f"Total links on page: {result.total_links_on_page}")
@@ -494,11 +489,7 @@ def render_domain_detail(result: AuditResult) -> None:
                 if hp_ai:
                     st.error(f"🤖 {len(hp_ai)} AI-detected gambling/adult link(s):")
                     st.dataframe(pd.DataFrame(hp_ai), use_container_width=True, hide_index=True)
-                if all_kw_flags_hp:
-                    st.warning(f"⚠️ {len(all_kw_flags_hp)} external gambling/adult link(s):")
-                    for flag in all_kw_flags_hp[:20]:
-                        st.markdown(f"- `{flag}`")
-                if not hp_known and not hp_ai and not all_kw_flags_hp:
+                if not hp_known and not hp_ai:
                     st.success("No P/G issues on homepage.")
 
             # Deep pages
@@ -509,8 +500,7 @@ def render_domain_detail(result: AuditResult) -> None:
                 for check in result.deep_page_checks:
                     pg_known = [b for b in check.get("bad_links", []) if not b.get("matched_bad_domain", "").startswith("[AI:")]
                     pg_ai = [b for b in check.get("bad_links", []) if b.get("matched_bad_domain", "").startswith("[AI:")]
-                    pg_kw = check.get("keyword_flags", [])
-                    has_issues = bool(pg_known or pg_ai or pg_kw)
+                    has_issues = bool(pg_known or pg_ai)
                     with st.expander(
                         f"🔎 {check['page_url']} — {'⚠️ issues found' if has_issues else '✅ clean'}",
                         expanded=False,
@@ -525,11 +515,7 @@ def render_domain_detail(result: AuditResult) -> None:
                             if pg_ai:
                                 st.error(f"🤖 {len(pg_ai)} AI-detected gambling/adult link(s):")
                                 st.dataframe(pd.DataFrame(pg_ai), use_container_width=True, hide_index=True)
-                            if pg_kw:
-                                st.warning(f"⚠️ {len(pg_kw)} external gambling/adult link(s):")
-                                for flag in pg_kw[:15]:
-                                    st.markdown(f"- `{flag}`")
-                            if not pg_known and not pg_ai and not pg_kw:
+                            if not pg_known and not pg_ai:
                                 st.success("No P/G issues on this page.")
 
             # ── Competitor Links ──────────────────────────────────────────
