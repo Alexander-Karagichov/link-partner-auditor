@@ -98,7 +98,7 @@ def _build_analyze_prompt(audit_data: dict, homepage_text: str = "", about_page_
     )
 
     sections = [
-        f"You are a senior SEO and brand-safety analyst at Bright Data.",
+        "You are a senior SEO and brand-safety analyst evaluating a potential link partner.",
         f"Analyse the following automated audit result for the domain **{domain}** "
         f"and provide a structured JSON response.",
         "",
@@ -112,9 +112,8 @@ def _build_analyze_prompt(audit_data: dict, homepage_text: str = "", about_page_
         "  - `website_niche`: 3-6 word description of the site's primary topic/industry",
         "  - `summary`: 2-4 sentence plain-language summary of the domain's profile and primary purpose",
         "  - `key_findings`: list of up to 6 short bullet-point strings (most important issues)",
-        "  - `recommendation`: 1-3 sentence recommendation for the Bright Data team",
-        "  - `competitor_risk`: boolean – does this domain appear to directly compete with Bright Data?",
-        "  - `brand_safe`: boolean – is this domain safe to associate with Bright Data?",
+        "  - `recommendation`: 1-3 sentence recommendation on whether to pursue a link with this domain",
+        "  - `brand_safe`: boolean – is this domain safe to associate with your brand?",
         "",
         "Risk level guide:",
         "  CLEAN    – no issues found, domain is reputable",
@@ -160,7 +159,6 @@ def analyze_audit(audit_data: dict, about_page_text: str = "", homepage_text: st
         "summary": "AI analysis could not be completed.",
         "key_findings": [],
         "recommendation": "Please review manually.",
-        "competitor_risk": False,
         "brand_safe": None,
         "error": None,
     }
@@ -170,7 +168,8 @@ def analyze_audit(audit_data: dict, about_page_text: str = "", homepage_text: st
             "You are a senior SEO and brand-safety analyst. "
             "You always respond with valid JSON only."
         )
-        user = _build_analyze_prompt(audit_data, homepage_text=homepage_text, about_page_text=about_page_text)
+        user = _build_analyze_prompt(audit_data, homepage_text=homepage_text,
+                                     about_page_text=about_page_text)
 
         raw = _backend.chat_json(system, user, max_tokens=800)
         parsed = _parse_json(raw)
@@ -301,7 +300,7 @@ def classify_outbound_links(page_url: str, external_links: list[str]) -> list[di
             "domain that IS such an operator. When unsure, do NOT flag.",
             "",
             "Return a JSON object with a single key `flagged_domains`: an array of objects with "
-            "`domain`, `category` (gambling|social_casino|sports_betting|adult|escort|other_harmful), "
+            "`domain`, `category` (gambling|social_casino|sports_betting|adult|escort), "
             "and a one-sentence `reason`. If none, return {\"flagged_domains\": []}. "
             "Return ONLY the JSON object.",
         ]

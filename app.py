@@ -152,7 +152,7 @@ def _results_to_df(results: list[AuditResult], show_anchor: bool = True) -> pd.D
             "Bad Links": len(r.bad_links_found) + sum(len(c.get("bad_links", [])) for c in r.deep_page_checks),
             "Competitor Links": len(r.competitor_links_found),
             "SERP P/G Results": len(r.serp_porn_gambling_results),
-            "Is a Competitor?": "Yes" if r.ai_analysis.get("competitor_risk") else "No",
+            "Is a Competitor?": "Yes" if getattr(r, "is_competitor", False) else "No",
         }
         if show_anchor:
             row["Anchor Text"] = (r.link_recommendation.get("best_keyword") if r.link_recommendation and r.link_recommendation.get("best_keyword") else "-")
@@ -370,11 +370,13 @@ def render_domain_detail(result: AuditResult) -> None:
 
         # ── AI Analysis banner ─────────────────────────────────────────────
         if result.ai_analysis.get("summary"):
-            comp_risk = result.ai_analysis.get("competitor_risk")
+            comp_risk = getattr(result, "is_competitor", False)
             col_c, col_r = st.columns([1, 3])
             with col_c:
                 if comp_risk:
                     st.markdown("**Is a Competitor: ⚠️ Yes**")
+                    if getattr(result, "competitor_reason", ""):
+                        st.caption(result.competitor_reason)
                 else:
                     st.markdown("**Is a Competitor: ✅ No**")
                 _niche = getattr(result, "niche", "") or result.ai_analysis.get("website_niche", "")

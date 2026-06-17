@@ -220,6 +220,8 @@ class AuditResult:
     # ── Headline recommendation (Skip / Check manually / Approved) ─────────────
     recommendation: dict = field(default_factory=dict)   # {decision, reason, flags, steps}
     niche: str = ""   # 3-6 word niche/topic, determined right after the homepage gate passes
+    is_competitor: bool = False
+    competitor_reason: str = ""
 
     # ── AI Analysis (OpenAI) ──────────────────────────────────────────────────
     ai_analysis: dict = field(default_factory=dict)
@@ -291,12 +293,13 @@ class AuditResult:
             "recommendation_decision": self.recommendation.get("decision"),
             "recommendation_reason": self.recommendation.get("reason"),
             "niche": self.niche,
+            "is_competitor": self.is_competitor,
+            "competitor_reason": self.competitor_reason,
             # AI analysis
             "risk_level": self.risk_level,
             "ai_analysis_summary": self.ai_analysis.get("summary", ""),
             "ai_analysis_recommendation": self.ai_analysis.get("recommendation", ""),
             "ai_brand_safe": self.ai_analysis.get("brand_safe"),
-            "ai_competitor_risk": self.ai_analysis.get("competitor_risk"),
             "ai_key_findings": self.ai_analysis.get("key_findings", []),
             "ai_website_niche": self.ai_analysis.get("website_niche", ""),
             "ai_analysis_error": self.ai_analysis_error,
@@ -357,6 +360,8 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
 
     core_kws = get_core_keywords()[: settings.MAX_KEYWORDS_CHECK]
     porn_kws = get_porn_gambling_keywords()  # no limit – check full list
+    from services import outbound_classifier as oc
+    oc_legit = oc._load_legit_domains()
 
     # ── GATE (first, serial): scrape homepage, hard-fail on gambling/porn links ─
     logger.info("[%s] Gate: scraping homepage and checking for gambling/porn links…", domain)
@@ -597,6 +602,12 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
                 # LLM to classify any gambling/adult destinations — this catches sites
                 # like splashcoins.com even when not in the known-bad list.
                 body_external_links = link_checker.extract_body_external_links(page_html, page_url)
+                # Never classify allowlisted (legit) destinations — social share buttons,
+                # facebook/twitter, etc. must never be flagged as gambling/adult.
+                body_external_links = [
+                    u for u in body_external_links
+                    if not oc.is_legit_domain(link_checker._extract_domain(u), oc_legit)
+                ]
                 if body_external_links:
                     logger.info(
                         "[%s] AI-classifying %d body external link(s) on %s…",
@@ -604,14 +615,17 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
                     )
                     ai_flagged = ai_service.classify_outbound_links(page_url, body_external_links)
                     check_entry["ai_flagged_links"] = ai_flagged
-                    # Merge AI-flagged links into bad_links so they surface in the UI
+                    # Merge only true gambling/adult flags into bad_links (ignore vague catch-alls).
+                    _PG_CATS = {"gambling", "social_casino", "sports_betting", "adult", "escort"}
                     existing_hrefs = {b["found_href"] for b in check_entry["bad_links"]}
                     for flagged in ai_flagged:
+                        if flagged.get("category") not in _PG_CATS:
+                            continue
                         href = flagged.get("found_href", "")
                         if href and href not in existing_hrefs:
                             check_entry["bad_links"].append({
                                 "found_href": href,
-                                "matched_bad_domain": f"[AI: {flagged.get('category', 'harmful')}]",
+                                "matched_bad_domain": f"[AI: {flagged.get('category', 'gambling')}]",
                                 "link_text": flagged.get("reason", ""),
                             })
                             existing_hrefs.add(href)
@@ -645,20 +659,24 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
             _pg_reason = f"Links to {len(_pg_domains)} gambling sites (likely incidental — review)"
             _pg_flag = f"Incidental gambling links ({len(_pg_domains)}): {', '.join(_pg_domains[:5])}"
             logger.info("[%s] Gambling links judged INCIDENTAL — downgraded SKIP → manual.", domain)
-    if _pg_decision:
-        _pg_status = "FAIL" if _pg_decision == "SKIP" else "WARN"
+    _pg_manual = None
+    if _pg_decision == "SKIP":
         result.recommendation = {
-            "decision": _pg_decision,
+            "decision": "SKIP",
             "reason": _pg_reason,
             "flags": ([_pg_flag] if _pg_flag else []),
             "steps": {
                 "homepage_gate": {"status": "PASS", "detail": ""},
-                "porn_gamble_links": {"status": _pg_status, "count": len(_pg_domains), "examples": _pg_domains[:5]},
+                "porn_gamble_links": {"status": "FAIL", "count": len(_pg_domains), "examples": _pg_domains[:5]},
             },
         }
-        result.risk_level = rec.derive_risk_level(_pg_decision)
-        logger.info("[%s] Recommendation: %s — %s.", domain, _pg_decision, _pg_reason)
+        result.risk_level = rec.derive_risk_level("SKIP")
+        logger.info("[%s] Recommendation: SKIP — %s.", domain, _pg_reason)
         return result
+    elif _pg_decision == "CHECK_MANUALLY":
+        _pg_manual = {"reason": _pg_reason, "flag": _pg_flag,
+                      "count": len(_pg_domains), "examples": _pg_domains[:5]}
+        logger.info("[%s] porn/gamble → manual; continuing to PBN/spam.", domain)
 
     # ── Outbound classification → reciprocity → legitimacy (PBN link scheme) ──
     from services import legitimacy_service as legit
@@ -823,6 +841,9 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
         _pbn_verdict = f_pbn.result()
 
     result.ai_analysis = analysis
+    # Competitor = only if the domain is on the user-provided competitor_sites.txt list.
+    result.is_competitor = link_checker.is_listed_competitor(domain)
+    result.competitor_reason = "On your competitor list" if result.is_competitor else ""
     result.ai_analysis_error = analysis.get("error")
     result.risk_level = analysis.get("risk_level", "UNKNOWN")
 
@@ -860,17 +881,35 @@ def audit_domain(input_url: str, linkbuilding_targets: Optional[list[dict]] = No
         pbn_band=_pbn_band, content_farm_band=_cf_band,
         young_days=settings.RECO_YOUNG_DOMAIN_DAYS, low_traffic=settings.RECO_LOW_TRAFFIC,
     )
+    if result.is_competitor:
+        _flags = _flags + [f"Competitor — {result.competitor_reason}"]
     _decision, _reason = rec.decide_after_scores(
         pbn_band=_pbn_band, pbn_score=_pbn_score,
         content_farm_band=_cf_band, content_farm_score=_cf_score,
     )
+    if _pg_manual:
+        _decision = "CHECK_MANUALLY"
+        _reason = _pg_manual["reason"]
+        _extra = []
+        if _pbn_band == "HIGH":
+            _extra.append(f"High PBN risk (score {_pbn_score})")
+        if _cf_band == "HIGH":
+            _extra.append(f"High content-farm risk (score {_cf_score})")
+        if _extra:
+            _reason = _reason + "; " + "; ".join(_extra)
+        if _pg_manual["flag"]:
+            _flags = [_pg_manual["flag"]] + _flags
     result.recommendation = {
         "decision": _decision,
         "reason": _reason,
         "flags": _flags,
         "steps": {
             "homepage_gate": {"status": "PASS", "detail": ""},
-            "porn_gamble_links": {"status": "PASS", "count": 0, "examples": []},
+            "porn_gamble_links": {
+                "status": "WARN" if _pg_manual else "PASS",
+                "count": _pg_manual["count"] if _pg_manual else 0,
+                "examples": _pg_manual["examples"] if _pg_manual else [],
+            },
             "pbn": {"status": "FAIL" if _pbn_band == "HIGH" else "PASS", "band": _pbn_band, "score": _pbn_score},
             "content_farm": {"status": "FAIL" if _cf_band == "HIGH" else "PASS",
                              "band": _cf_band, "score": _cf_score,

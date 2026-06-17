@@ -282,9 +282,12 @@ After all checks complete, the audit produces a single headline recommendation v
 
 - **Subdomains excluded from the deep crawl.** Only the registrable root domain is audited; subdomains (e.g. `china.xavor.com`) are skipped. Google treats subdomains as separate sites, so gambling content hosted on a subdomain does not fail the main domain.
 - **Promoter vs. incidental.** When a site would otherwise be flagged for linking to gambling sites, the AI distinguishes a genuine gambling **promoter / affiliate** (→ Skip) from a **neutral directory, news, or B2B site** that links to gambling companies incidentally — e.g. a business-directory whose company profiles happen to include casino or lottery operators (→ Check manually).
+- **Allowlisted / social domains are never flagged.** The deep link classifier skips any destination domain listed in `data/legit_domains.txt`. Social share buttons (Facebook, Twitter/X, LinkedIn, etc.) are pre-listed there, so they never contribute to the bad-link count regardless of the page topic.
+- **Check-manually still runs PBN and content-farm checks.** Receiving a **Check manually** verdict (e.g. from 1–2 bad outbound links or a failed fetch) does **not** short-circuit the pipeline — PBN and content-farm scoring continue so reviewers see the full picture. Only **Skip** halts remaining checks. If PBN or content-farm comes back HIGH on a domain that reached this stage, that finding is appended to the verdict reason.
 
 **Flags (shown, non-blocking — do not change the decision):**
 
+- **Is a Competitor?** — the audited site is flagged as a competitor **only if it appears in `data/competitor_sites.txt`** (the list you maintain). Purely informational — shown in the **"Is a Competitor?"** column and noted in the verdict reason; it does **not** change the Skip / Check manually / Approved decision.
 - Links to a competitor domain (`data/competitor_sites.txt`)
 - New domain (< `RECO_YOUNG_DOMAIN_DAYS` days, default 180) **and** low organic traffic (< `RECO_LOW_TRAFFIC` visits/mo, default 1 000)
 - PBN score **MEDIUM** (40–69)

@@ -147,6 +147,14 @@ def check_competitor_links(html: str, source_url: str) -> list[dict]:
     return matches
 
 
+def is_listed_competitor(domain: str) -> bool:
+    """True if `domain` is (or is a subdomain of) an entry in competitor_sites.txt."""
+    d = (domain or "").lower().removeprefix("www.")
+    if not d:
+        return False
+    return any(_is_match(d, comp) for comp in _load_competitor_domains())
+
+
 # ── Core logic ────────────────────────────────────────────────────────────────
 
 def _extract_domain(href: str) -> str:
