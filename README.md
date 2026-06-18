@@ -23,7 +23,7 @@ You're building backlinks. A prospect list lands in your inbox. Now what?
 
 ```
 You: *Opens 20 prospect tabs*
-You: *Googles "site:domain.com casino" by hand*
+You: *Googles "site:www.example.com casino" by hand*
 You: *Pastes the URL into a backlink tool*
 You: *Asks ChatGPT "does this look sketchy?"*
 You: *Builds a spreadsheet… then repeats it 100 more times*
@@ -50,7 +50,7 @@ For every domain, the auditor runs a battery of checks **in parallel** and short
 |---|---|
 | 🔑 SEO keyword rankings | Pages ranking for porn / gambling / adult terms |
 | 📊 Domain overview | Authority score, organic traffic, backlinks |
-| 🌍 Google SERP scan | `site:domain.com <danger term>` for each domain |
+| 🌍 Google SERP scan | `site:www.example.com <danger term>` for each domain |
 | 🔗 Homepage link check | Bad outbound links — known-bad list **+** AI judgment |
 | 🔎 Deep page audit | Top flagged pages scraped and re-checked for bad links |
 | 🕵️ PBN / link-network check | Private-blog-network & link-farm patterns |
@@ -66,9 +66,9 @@ A clean, sortable table you can export to Excel — one row per domain:
 
 | Domain | Recommendation | Spam | Niche | Authority | Traffic | Bad Links |
 |---|---|---|---|---|---|---|
-| technology.org | 🔴 **SKIP** | – | Science & tech news | 68 | 93K | 56 |
-| droven.io | 🟠 **CHECK MANUALLY** | MEDIUM | Food & lifestyle blog | 12 | 7K | 0 |
-| negup.com | 🟢 **APPROVED** | LOW | Taxi directory | 28 | 4K | 0 |
+| www.example1.com | 🔴 **SKIP** | – | Science & tech news | 68 | 93K | 56 |
+| www.example2.com | 🟠 **CHECK MANUALLY** | MEDIUM | Food & lifestyle blog | 12 | 7K | 0 |
+| www.example3.com | 🟢 **APPROVED** | LOW | Taxi directory | 28 | 4K | 0 |
 
 - 🔴 **Skip** — clear reject (failed the homepage gate or links to porn/gambling).
 - 🟠 **Check manually** — ambiguous signal (couldn't fetch data, or PBN / content-farm came back HIGH).
@@ -130,7 +130,7 @@ Outbound links are judged by the **destination domain's nature**, not by URL key
 
 - **Fast-path:** if the homepage alone links to ≥ `PORN_GAMBLE_SKIP_THRESHOLD` (default **3**) distinct bad destinations, the domain is marked **Skip** immediately and the rest of the pipeline is skipped.
 - **Promoter vs. incidental:** a genuine gambling **affiliate/promoter** → Skip; a **neutral directory or B2B site** that happens to list a casino company → Check manually.
-- **Subdomains excluded:** only the registrable root is audited (Google treats `china.xavor.com` as a separate site).
+- **Subdomains excluded:** only the registrable root is audited (Google treats `blog.example.com` as a separate site).
 - **Allowlist:** anything in `data/legit_domains.txt` is never flagged — social share buttons (Facebook, X, LinkedIn…) are pre-listed there.
 
 ### 🕵️ PBN / link-network check
@@ -299,7 +299,7 @@ Contributions welcome — especially:
 
 **Alexander Karagichev**
 
-- GitHub: [@Alexander-Karagichev](https://github.com/Alexander-Karagichev)
+- GitHub: [@Alexander-Karagichov](https://github.com/Alexander-Karagichov)
 
 ---
 
