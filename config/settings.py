@@ -53,6 +53,9 @@ ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 
 # ── App Settings ──────────────────────────────────────────────────────────────
+# Personal screen-share convenience toggles (hide link-building targets / anchor
+# column). Off by default; set PRESENTATION_MODE=true in a local .env to enable.
+PRESENTATION_MODE: bool = os.getenv("PRESENTATION_MODE", "false").strip().lower() in ("1", "true", "yes")
 MAX_CONCURRENT_AUDITS: int = int(os.getenv("MAX_CONCURRENT_AUDITS", "3"))
 REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "60"))
 MAX_KEYWORDS_CHECK: int = int(os.getenv("MAX_KEYWORDS_CHECK", "50"))

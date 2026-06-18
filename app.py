@@ -179,10 +179,7 @@ def _export_excel(results: list[AuditResult]) -> bytes:
 
 def render_sidebar() -> None:
     with st.sidebar:
-        st.image(
-            "https://brightdata.com/favicon.ico",
-            width=32,
-        )
+        st.markdown("### 🔍 Link Partner Auditor")
         st.title("⚙️ Settings")
 
         st.subheader("API Keys")
@@ -252,11 +249,15 @@ def render_sidebar() -> None:
             reload_bad_domains()
             st.success("Lists reloaded!")
 
-        st.divider()
-        st.subheader("Presentation Mode")
-        st.toggle("Show link-building targets", value=True, key="show_lb_targets")
-        st.toggle("Show Anchor Text column", value=True, key="show_anchor_toggle")
-        st.caption("Toggle these off before sharing a screenshot or screen share.")
+        # Personal screen-share convenience — hidden by default in the open-source
+        # build. Enable locally by setting PRESENTATION_MODE=true in your .env
+        # (which is gitignored). When hidden, both columns default to shown.
+        if settings.PRESENTATION_MODE:
+            st.divider()
+            st.subheader("Presentation Mode")
+            st.toggle("Show link-building targets", value=True, key="show_lb_targets")
+            st.toggle("Show Anchor Text column", value=True, key="show_anchor_toggle")
+            st.caption("Toggle these off before sharing a screenshot or screen share.")
 
         st.divider()
         st.subheader("Concurrency")
@@ -825,18 +826,18 @@ def main() -> None:
     with st.expander("ℹ️ About this tool", expanded=False):
         st.markdown(
             """
-**Website Audit Automation** checks domains across multiple dimensions:
+**Website Audit Automation** checks each domain across multiple dimensions and ends on
+a single verdict — 🔴 **Skip** / 🟠 **Check manually** / 🟢 **Approved** — from a
+short-circuiting decision tree (it stops at the first disqualifying check).
 
 | Check | Data Source |
 |---|---|
-| AI Visibility, Mentions, Cited Pages | SEMrush AI Toolkit API |
-| Authority Score, Organic Traffic | SEMrush Domain Overview API |
-| Referring Domains, Backlinks | SEMrush Analytics API |
-| Core keyword rankings | SEMrush Organic Research |
-| Porn/Gambling keyword rankings | SEMrush Organic Research |
-| Bad outbound links on homepage | Bright Data Web Unlocker (`web_unlocker1`) |
-| Google site: porn/gambling check | Bright Data SERP API (`serp_api_marketing_make_com`) |
-| Risk scoring & analysis | OpenAI GPT-4o |
+| Authority Score, Organic Traffic, Backlinks, Referring Domains | SEMrush |
+| Core + porn/gambling keyword rankings | SEMrush Organic Research |
+| Homepage + deep-page outbound link safety (gambling/adult) | Bright Data + AI |
+| Google `site:` porn/gambling & core-business checks | Bright Data SERP API |
+| PBN / link-network, content-farm spam, reciprocity, domain age | computed signals + AI |
+| AI summary + final verdict | OpenAI **or** Anthropic (set by `LLM_PROVIDER`) |
 
 **Keyword files** (editable in `/keywords/`):
 - `semrush_core_business_keywords.txt` – your business keywords → SEMrush rank + position check
@@ -844,11 +845,11 @@ def main() -> None:
 - `semrush_porn_gambling_keywords.txt` – danger terms → SEMrush rank + position check
 - `serp_porn_gambling_keywords.txt` – danger terms → Google `site:` check (Bright Data)
 
-**Bad sites list** (editable in `/data/known_bad_sites.txt`):
-A curated list of known shady gambling and adult affiliate sites.
-
-**Competitor sites list** (editable in `/data/competitor_sites.txt`):
-One domain per line. The audit checks if the target website links out to any of these domains.
+**Data files** (editable in `/data/`):
+- `known_bad_sites.txt` – curated known gambling/adult affiliate sites (definite bad links)
+- `legit_domains.txt` – known-good outbound domains (e.g. socials, maps); ignored by the checks
+- `competitor_sites.txt` – your competitor domains; a site is flagged a **competitor** if it's
+  on this list, and flagged if it **links out** to any of them
 """,
             unsafe_allow_html=False,
         )
