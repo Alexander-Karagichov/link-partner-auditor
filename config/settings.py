@@ -28,6 +28,12 @@ SEO_PROVIDER: str = os.getenv("SEO_PROVIDER", "semrush").strip().lower()
 # 0 falls back to the US database.
 SEMRUSH_TOP_COUNTRIES: int = int(os.getenv("SEMRUSH_TOP_COUNTRIES", "1"))
 
+# ── Scraper Provider Selection ────────────────────────────────────────────────
+# Which backend fetches page HTML and runs Google SERP lookups:
+# "brightdata" (default) or any custom adapter you register in
+# services/scraper_service.py (e.g. the "requests" example adapter).
+SCRAPER_PROVIDER: str = os.getenv("SCRAPER_PROVIDER", "brightdata").strip().lower()
+
 # ── Bright Data ───────────────────────────────────────────────────────────────
 # Single Bearer API Key – found at brightdata.com/cp/setting/users
 BRIGHTDATA_API_KEY: str = os.getenv("BRIGHTDATA_API_KEY", "")
@@ -130,7 +136,8 @@ def validate_config() -> list[str]:
             missing.append("DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD")
     elif not SEMRUSH_API_KEY:
         missing.append("SEMRUSH_API_KEY")
-    if not BRIGHTDATA_API_KEY:
+    # Bright Data credentials are only required when it's the active scraper.
+    if SCRAPER_PROVIDER == "brightdata" and not BRIGHTDATA_API_KEY:
         missing.append("BRIGHTDATA_API_KEY")
     # Only the active LLM provider's key is required.
     if LLM_PROVIDER == "anthropic":

@@ -202,15 +202,15 @@ One entry per line; lines starting with `#` are comments. After editing, click *
 
 ## 🔄 Swappable Providers
 
-The tool is **vendor-neutral by design** — no provider is hard-wired. Two dispatchers pick the backend at runtime from an env var:
+The tool is **vendor-neutral by design** — no provider is hard-wired. Three dispatchers pick the backend at runtime from an env var:
 
 | Capability | Dispatcher | `env` switch | Built-in options |
 |---|---|---|---|
 | SEO data | `services/seo_service.py` | `SEO_PROVIDER` | `semrush`, `dataforseo` |
 | AI scoring | `services/llm_service.py` | `LLM_PROVIDER` | `openai`, `anthropic` |
-| Scraping + SERP | `services/bright_data_service.py` | — | Bright Data |
+| Scraping + SERP | `services/scraper_service.py` | `SCRAPER_PROVIDER` | `brightdata`, `requests` (example) |
 
-Switching is just an env change — `SEO_PROVIDER=dataforseo`, `LLM_PROVIDER=anthropic` — then restart. **No code edits.**
+Switching is just an env change — `SEO_PROVIDER=dataforseo`, `LLM_PROVIDER=anthropic`, `SCRAPER_PROVIDER=requests` — then restart. **No code edits.**
 
 <details>
 <summary><strong>Adding a new SEO provider (Ahrefs, Moz, SpyFu…)</strong></summary>
@@ -234,9 +234,19 @@ Implement `chat_json(system_prompt, user_prompt, max_tokens) -> str` in `service
 </details>
 
 <details>
-<summary><strong>Using a different scraper</strong></summary>
+<summary><strong>Adding a new scraper (ScraperAPI, Zyte, Oxylabs, Playwright…)</strong></summary>
 
-`services/bright_data_service.py` exposes `scrape_page(url) → (html, error)` and `serp_search(query, num_results) → list[dict]`. Any scraper returning those shapes is a drop-in replacement.
+A scraper backend implements just **two primitives**:
+
+```python
+scrape_page(url)                -> (html, error)
+serp_search(query, num_results) -> (list[dict], error)   # dicts: position, title, url, snippet
+```
+
+1. Create `services/<name>_scraper_service.py` with those two functions. `services/requests_scraper_service.py` is a complete worked example.
+2. Register it in `services/scraper_service.py` under a new `SCRAPER_PROVIDER` value.
+
+Everything else (the `site:<domain> <term>` searches, term loading, domain filtering) lives in `scraper_service.py` and is provider-agnostic, so you never reimplement it. Set `SCRAPER_PROVIDER=<name>` and restart.
 </details>
 
 ---
@@ -259,7 +269,8 @@ audit/
 services/
   seo_service.py            ← SEO dispatcher (semrush / dataforseo)
   llm_service.py            ← AI dispatcher (openai / anthropic)
-  bright_data_service.py    ← Web scraping + SERP
+  scraper_service.py        ← Scraper dispatcher (brightdata / requests) + site: search logic
+  bright_data_service.py    ← Default scraper backend (Web Unlocker + SERP)
   link_checker_service.py   ← HTML parsing, outbound link extraction
   pbn_service.py            ← PBN / link-network scoring
   content_farm_service.py   ← Content-farm spam scoring

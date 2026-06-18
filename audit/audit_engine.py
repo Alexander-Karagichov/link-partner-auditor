@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 
 from config import settings
 from services import seo_service as semrush
-from services import bright_data_service as bdata
+from services import scraper_service as bdata
 from services import link_checker_service as link_checker
 from services import llm_service as ai_service
 from services import pbn_service
