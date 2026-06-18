@@ -41,7 +41,7 @@ Meanwhile:
 ## ✨ The Solution
 
 ```
-Paste 100 domains  →  Click "Start Audit"  →  Download the verdicts
+Paste your domains  →  Click "Start Audit"  →  Download the verdicts
 ```
 
 For every domain, the auditor runs a battery of checks **in parallel** and short-circuits the moment a domain is a clear reject — so obvious junk costs almost no API quota.
